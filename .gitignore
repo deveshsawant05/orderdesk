@@ -1,0 +1,14 @@
+.env
+.venv/
+node_modules/
+.next/
+__pycache__/
+.pytest_cache/
+*.pyc
+playwright-report/
+test-results/
+artifacts/
+!artifacts/.gitkeep
+*.log
+backend/.coverage
+.env.local

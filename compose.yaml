@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Copy .env.example to .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set database password}
+      POSTGRES_DB: ${POSTGRES_DB:-orderdesk}
+    ports: ["127.0.0.1:5438:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-orderdesk}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3010}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      DEMO_MODE: ${DEMO_MODE:-true}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:?Set a demo-only password}
+    ports: ["127.0.0.1:8010:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+    command: sh -c "alembic upgrade head && python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8010}
+    ports: ["127.0.0.1:3010:3000"]
+    depends_on: [api]
+volumes:
+  pgdata:
