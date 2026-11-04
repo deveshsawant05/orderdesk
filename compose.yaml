@@ -19,6 +19,8 @@ services:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3010}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       DEMO_MODE: ${DEMO_MODE:-true}
+      ROUTING_API_URL: ${ROUTING_API_URL:-}
+      GEOCODER_URL: ${GEOCODER_URL:-}
       DEMO_PASSWORD: ${DEMO_PASSWORD:?Set a demo-only password}
     ports: ["127.0.0.1:8010:8000"]
     depends_on:

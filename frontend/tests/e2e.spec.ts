@@ -3,6 +3,14 @@ import fs from 'node:fs';
 
 const api = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8010';
 const headers = {'X-OrderDesk':'1','X-OrderDesk-Experience':'staff'};
+const tilePattern = 'https://tile.openstreetmap.org/**';
+const testTile = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY1sAAAAASUVORK5CYII=', 'base64');
+
+async function stubMapTiles(page: Page) {
+  await page.route(tilePattern, route => route.fulfill({contentType:'image/png',body:testTile}));
+}
+
+test.beforeEach(async ({page}) => {await stubMapTiles(page);});
 
 async function signIn(context: BrowserContext, email: string) {
   const result = await context.request.post(api+'/auth/login', {
@@ -13,6 +21,7 @@ async function signIn(context: BrowserContext, email: string) {
 
 async function chooseLocation(page: Page, area = 'kondapur') {
   await page.getByRole('button',{name:/Where shall we bring your food|Choose delivery point/}).click();
+  await page.getByText('Demo points and manual coordinates',{exact:true}).click();
   await page.getByLabel('Try a demo delivery point').selectOption(area);
   await page.getByRole('button',{name:'Confirm location'}).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -74,9 +83,26 @@ test('guest test payment routes to manager, kitchen and secure SSE tracker',asyn
   await manager.getByLabel('Reason for the customer').fill('Fresh dum finishing needs more time.');
   await manager.getByRole('button',{name:'Save revised ready time'}).click();
   await expect(page.getByText(/Kitchen revision:/)).toBeVisible();
+  const revised = await (await page.request.get(api+'/tracking/'+token)).json();
+  const revisedTime = new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(revised.revised_at));
+  await expect(ticket.locator('.ticket-times').getByText(revisedTime,{exact:true})).toBeVisible();
   await kitchen.screenshot({path:'../artifacts/kitchen-tablet.png'});
   await ticket.getByRole('button',{name:'Mark ready'}).click();
   await expect(page.getByRole('heading',{name:'Packed with care. Ready to go.'})).toBeVisible();
+  await page.route(api+'/tracking/*/road-route', route => {
+    const cors = {
+      'Access-Control-Allow-Origin':new URL(page.url()).origin,
+      'Access-Control-Allow-Credentials':'true',
+      'Access-Control-Allow-Headers':'Content-Type,X-OrderDesk,X-OrderDesk-Experience',
+      'Access-Control-Allow-Methods':'POST,OPTIONS',
+    };
+    return route.request().method() === 'OPTIONS'
+      ? route.fulfill({status:204,headers:cors})
+      : route.fulfill({headers:cors,json:{distance_km:2.15,path:[{lat:17.45879,lng:78.37306},{lat:17.4592,lng:78.3741}]}});
+  });
+  await page.getByRole('button',{name:'Show road route'}).click();
+  await expect(page.getByText('2.15 km by road')).toBeVisible();
+  await expect(page.locator('.delivery-road-route')).toBeVisible();
   await page.screenshot({path:'../artifacts/tracking-desktop.png'});
   const ready = await (await page.request.get(api+'/tracking/'+token)).json();
   const cursor = ready.events.at(-1).id;
@@ -112,6 +138,7 @@ test('outlet stock SSE flags a customer bag and CMS edits propagate',async ({bro
   await page.getByLabel('Availability at').selectOption('kondapur');
   const customer = await browser.newContext();
   const menu = await customer.newPage();
+  await stubMapTiles(menu);
   await menu.goto('/');
   await chooseLocation(menu);
   await addChicken(menu);
@@ -212,4 +239,107 @@ test('party form and manager confirmation update the customer and kitchen',async
   await manager.getByRole('button',{name:'Reporting'}).click();
   await expect(manager.getByText('Median prep · acceptance to ready')).toBeVisible();
   await Promise.all([managerContext.close(),kitchenContext.close()]);
+});
+
+test('Hyderabad map pans, zooms and assigns a touch-selected pin on mobile', async ({browser}) => {
+  const context = await browser.newContext({
+    isMobile:true,hasTouch:true,viewport:{width:390,height:844},permissions:['geolocation'],
+  });
+  const page = await context.newPage();
+  await stubMapTiles(page);
+  try {
+    const outlets = await (await page.request.get(api+'/outlets')).json() as {id:string;lat:number;lng:number}[];
+    const kondapur = outlets.find(outlet => outlet.id==='kondapur')!;
+    await context.setGeolocation({latitude:kondapur.lat,longitude:kondapur.lng});
+    await page.goto('/');
+    await page.getByRole('button',{name:/Where shall we bring your food/}).tap();
+    const map = page.getByRole('region',{name:'Hyderabad delivery map'});
+    await expect(map.locator('.leaflet-tile-loaded').first()).toBeVisible();
+    await expect(map.getByRole('link',{name:'OpenStreetMap'})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Use map centre'})).toHaveCount(0);
+    await expect(map.locator('.leaflet-overlay-pane path')).toHaveCount(17);
+    await page.route(api+'/places?*', route => route.fulfill({json:[
+      {title:'Kondapur Botanical Garden Road',context:'Hyderabad',lat:kondapur.lat,lng:kondapur.lng,outlet_name:'Kondapur'},
+      {title:'Outside test area',context:'Hyderabad',lat:17.22,lng:78.24,outlet_name:null},
+    ]}));
+    await page.getByLabel('Search street or landmark').fill('Botanical Garden');
+    await expect(page.getByRole('button',{name:/Outside test area/})).toBeDisabled();
+    await page.getByRole('button',{name:/Kondapur Botanical Garden Road/}).tap();
+    await expect(page.getByLabel('Delivery address')).toHaveValue('Kondapur Botanical Garden Road, Hyderabad');
+    await expect(page.locator('.delivery-match')).toContainText('Kondapur');
+    await page.getByRole('button',{name:'Use my current location'}).tap();
+    await expect(page.locator('.delivery-match')).toContainText('Kondapur');
+
+    const zoom = async () => {
+      const source = await map.locator('.leaflet-tile-loaded').first().getAttribute('src');
+      return Number(source?.split('/').at(-3));
+    };
+    const beforeZoom = await zoom();
+    await map.getByRole('button',{name:'Zoom in',exact:true}).tap();
+    await expect.poll(zoom).toBeGreaterThan(beforeZoom);
+
+    await map.scrollIntoViewIfNeeded();
+    const bounds = (await map.boundingBox())!;
+    const cdp = await context.newCDPSession(page);
+    const centerX = bounds.x+bounds.width/2;
+    const pinchY = bounds.y+bounds.height*0.64;
+    const pinch = async (from:number,to:number) => {
+      const points = (span:number) => [{x:centerX-span,y:pinchY,id:1},{x:centerX+span,y:pinchY,id:2}];
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:points(from)});
+      for (let step=1;step<=7;step++) {
+        await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:points(from+(to-from)*step/7)});
+      }
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    };
+    const beforePinch = await zoom();
+    await pinch(28,92);
+    await expect.poll(zoom).toBeGreaterThan(beforePinch);
+    const afterPinch = await zoom();
+    await pinch(92,28);
+    await expect.poll(zoom).toBeLessThan(afterPinch);
+    const x = bounds.x+bounds.width*0.30;
+    const y = bounds.y+bounds.height*0.66;
+    const pane = map.locator('.leaflet-map-pane');
+    const beforePan = await pane.getAttribute('style');
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x,y}]});
+    for (let step=1;step<=6;step++) {
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x+step*14,y:y-12}]});
+    }
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    await expect.poll(() => pane.getAttribute('style')).not.toBe(beforePan);
+    await map.tap({position:{x:bounds.width*0.55,y:bounds.height*0.6}});
+    await expect(map.locator('.delivery-map-pin')).toBeVisible();
+    await expect(page.locator('.delivery-match')).toContainText('Kondapur');
+
+    await page.getByText('Demo points and manual coordinates',{exact:true}).tap();
+    await expect(page.getByLabel('Latitude')).not.toHaveValue(String(kondapur.lat));
+    await page.getByLabel('Latitude').fill('0');
+    await page.getByLabel('Longitude').fill('0');
+    await expect(page.locator('.delivery-match')).toContainText('No open kitchen');
+    const confirm = page.getByRole('button',{name:'Confirm location'});
+    await expect(confirm).toBeDisabled();
+    await page.getByRole('button',{name:'Use my current location'}).tap();
+    await expect(page.locator('.delivery-match')).toContainText('Kondapur');
+    await page.getByLabel('Delivery address').fill('Synthetic mobile map address');
+    await confirm.tap();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('button',{name:/Synthetic mobile map address/})).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  } finally {
+    await context.close();
+  }
+});
+
+test('laptop wheel zooms the Hyderabad map in both directions',async ({page}) => {
+  await page.goto('/');
+  await page.getByRole('button',{name:/Where shall we bring your food/}).click();
+  const map = page.getByRole('region',{name:'Hyderabad delivery map'});
+  const zoom = async () => Number((await map.locator('.leaflet-tile-loaded').first().getAttribute('src'))?.split('/').at(-3));
+  const initial = await zoom();
+  await map.hover();
+  await page.mouse.wheel(0,-170);
+  await expect.poll(zoom).toBeGreaterThan(initial);
+  const zoomed = await zoom();
+  await page.mouse.wheel(0,170);
+  await expect.poll(zoom).toBeLessThan(zoomed);
 });

@@ -11,24 +11,25 @@ from .pricing import gst_inclusive
 from .orders import next_number
 
 IMAGE_PATHS=['/food/chicken.webp','/food/vegetable.webp','/food/mutton.webp','/food/haleem.webp','/food/salan.webp','/food/meetha.webp']
+# Demo pins use the locality reference points documented in docs/IMPLEMENTATION.md.
 OUTLETS=[
- ('kondapur','Kondapur','restaurant',17.4622,78.3568),
- ('kukatpally','Kukatpally','restaurant',17.4948,78.3996),
- ('jubilee-hills','Jubilee Hills','restaurant',17.4311,78.4073),
- ('banjara-hills','Banjara Hills','restaurant',17.4156,78.4347),
- ('madhapur','Madhapur','restaurant',17.4483,78.3915),
- ('hitech-city','HITEC City','restaurant',17.4504,78.3808),
- ('begumpet','Begumpet','restaurant',17.4448,78.4664),
- ('secunderabad','Secunderabad','restaurant',17.4399,78.4983),
+ ('kondapur','Kondapur','restaurant',17.45879,78.37306),
+ ('kukatpally','Kukatpally','restaurant',17.4931,78.4054),
+ ('jubilee-hills','Jubilee Hills','restaurant',17.43084,78.41029),
+ ('banjara-hills','Banjara Hills','restaurant',17.41775,78.4399),
+ ('madhapur','Madhapur','restaurant',17.44089,78.39163),
+ ('hitech-city','HITEC City','restaurant',17.44441,78.3779),
+ ('begumpet','Begumpet','restaurant',17.4462,78.46302),
+ ('secunderabad','Secunderabad','restaurant',17.432,78.487),
  ('ameerpet','Ameerpet','restaurant',17.4375,78.4483),
- ('manikonda','Manikonda','restaurant',17.4015,78.3753),
- ('miyapur','Miyapur','restaurant',17.4968,78.3614),
- ('sainikpuri','Sainikpuri','restaurant',17.4860,78.5400),
- ('dilsukhnagar','Dilsukhnagar','restaurant',17.3687,78.5247),
- ('lb-nagar','LB Nagar','restaurant',17.3457,78.5522),
- ('gachibowli','Gachibowli cloud kitchen','cloud_kitchen',17.4401,78.3489),
- ('nallagandla','Nallagandla cloud kitchen','cloud_kitchen',17.4708,78.3006),
- ('uppal','Uppal cloud kitchen','cloud_kitchen',17.4058,78.5591),
+ ('manikonda','Manikonda','restaurant',17.40371,78.37662),
+ ('miyapur','Miyapur','restaurant',17.49816,78.35676),
+ ('sainikpuri','Sainikpuri','restaurant',17.48922,78.54249),
+ ('dilsukhnagar','Dilsukhnagar','restaurant',17.36887,78.52562),
+ ('lb-nagar','LB Nagar','restaurant',17.3502,78.5511),
+ ('gachibowli','Gachibowli cloud kitchen','cloud_kitchen',17.44362,78.35196),
+ ('nallagandla','Nallagandla cloud kitchen','cloud_kitchen',17.47748,78.30604),
+ ('uppal','Uppal cloud kitchen','cloud_kitchen',17.415,78.5432),
 ]
 
 def seed(db):

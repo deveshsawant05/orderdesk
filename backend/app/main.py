@@ -14,10 +14,12 @@ from .models import *
 from .auth import current_user, customer, admin, central_manager, staff_outlet, user_json, hasher, create_session, token_hash, session_cookie
 from .schemas import *
 from .pricing import quote, eligible_outlets, time_available
+from .road_routing import road_route
 from .prediction import predict
 from .orders import accessible_order, order_json, orders_json, tracking_order, next_number, NEXT
 from .events import emit, notify, escalate_late
 from .party import router as party_router, find_party
+from .places import router as places_router
 from .reporting import router as reporting_router
 from .loyalty import router as loyalty_router, verified_phone, apply_redemption, record_points, EARN_PER_PAISE
 
@@ -45,6 +47,7 @@ async def lifespan(app):
 app=FastAPI(title='OrderDesk API',version='1.0.0',lifespan=lifespan)
 app.include_router(loyalty_router)
 app.include_router(party_router)
+app.include_router(places_router)
 app.include_router(reporting_router)
 ORIGIN=os.getenv('APP_ORIGIN','http://localhost:3010')
 app.add_middleware(CORSMiddleware,allow_origins=[ORIGIN],allow_credentials=True,allow_methods=['GET','POST','PUT','PATCH','DELETE'],allow_headers=['Content-Type','X-OrderDesk','X-OrderDesk-Experience','Last-Event-ID'])
@@ -307,6 +310,18 @@ def orders(outlet_id:str|None=None,snapshots:bool=False,queue:bool=False,user:Us
     if not queue or user.role == 'customer':
         query = query.limit(100)
     return orders_json(db, db.scalars(query).all(), user.role == 'customer', user.role == 'customer')
+
+@app.post('/tracking/{token}/road-route')
+def tracking_road_route(token: str, db: DBSession = Depends(get_db)):
+    order = tracking_order(db, token)
+    if order.destination_lat is None or order.destination_lng is None:
+        raise HTTPException(404, 'This order has no delivery pin.')
+    outlet = db.get(Outlet, order.outlet_id)
+    origin = outlet.lat, outlet.lng
+    destination = order.destination_lat, order.destination_lng
+    db.close()
+    return road_route(origin, destination)
+
 
 @app.get('/tracking/{token}')
 def track(token: str, db: DBSession = Depends(get_db)):

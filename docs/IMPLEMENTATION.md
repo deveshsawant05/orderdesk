@@ -20,7 +20,7 @@ For host development, start only the database with `docker compose up -d db`. Fr
 ```sh
 python -m alembic upgrade head
 python -m app.seed
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload --no-access-log
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload --reload-dir app --timeout-graceful-shutdown 3 --no-access-log
 ```
 
 In a second terminal, run `npm ci` and `npm run dev` from `frontend/`. The API browser origin defaults to `http://localhost:3010`. Set `NEXT_PUBLIC_API_URL` for other API addresses and `API_INTERNAL_URL` when server rendering needs a different private address. Use the same browser hostname for web and API in local development. Compose sets the internal address automatically.
@@ -40,16 +40,26 @@ Enter a synthetic number from `6000000000` through `6000000099` and select **Que
 
 ## Design and assumptions
 
-- The 14 outlets, three cloud kitchens, service radii, coordinates, generated food imagery, allergy details and licence placeholders are synthetic. The three named client order samples and their totals, payment modes, times and stages are preserved. Their assumed reference day is 2 November 2026 IST and their sample clock is fixed at 21:20 IST.
+- The 14 outlets and three cloud kitchens use documented Hyderabad neighbourhood reference points as their demo pins. Service radii, generated food imagery, allergy details and licence placeholders are synthetic. The three named client order samples and their totals, payment modes, times and stages are preserved. Their assumed reference day is 2 November 2026 IST and their sample clock is fixed at 21:20 IST.
 - Routing filters for open outlets within their service radius, then compares full-precision Haversine distances. The stable outlet ID breaks exact ties. Stock and current routing are revalidated at payment confirmation. The chosen outlet and prices are snapshotted in the paid order.
-- The default map uses a local coordinate grid. To offer street tiles in the delivery picker, configure `NEXT_PUBLIC_MAP_TILE_URL` and `NEXT_PUBLIC_MAP_ATTRIBUTION` for your approved raster provider. Users explicitly load the tiles and can return to the grid. Tracking draws only the assigned outlet and destination. For OpenStreetMap tiles, follow the [OSMF tile usage policy](https://operations.osmfoundation.org/policies/tiles/).
+- The delivery picker defaults to OpenStreetMap street tiles, with pan, mouse-wheel, pinch and button zoom, tap or drag to select a pin, geolocation, and manual coordinates. It shows the selected outlet’s service radius and never requests a driving route during address selection. Configure `NEXT_PUBLIC_MAP_TILE_URL` and `NEXT_PUBLIC_MAP_ATTRIBUTION` to change the raster provider. [OSMF tile usage policy](https://operations.osmfoundation.org/policies/tiles/)
+- The order tracker’s **Show road route** action loads driving distance and highlights the outlet-to-destination route. Demo mode uses the FOSSGIS OSRM car service. The action explains that the provider may log the two coordinates. For other environments set `ROUTING_API_URL` to a compatible OSRM endpoint. A routing outage leaves order tracking and checkout available. [FOSSGIS routing policy](https://routing.openstreetmap.de/about.html)
 - The checkout uses integer paise. GST is embedded in the discounted total at 5/105, rounded to the nearest paise. The demo has free delivery. Marketing consent is separate from transactional updates.
 - Each order has an internal UUID, a unique public reference, and a unique daily number per outlet and IST service date. A PostgreSQL upsert allocates the daily number inside the payment transaction. A payment attempt is unique per user and idempotency key. Locking the cart and payment prevents two confirmations from creating separate orders.
 - Managers accept or cancel active paid orders for their assigned outlet. Kitchen staff can progress an accepted order to ready and handed off. Central permission is a manager capability. A cancellation writes a reversal event. No real payments or external notifications are sent.
 - The prep model is ordinary least squares, trained on 480 reproducible synthetic observations with 120 held out. Features include outlet load, pending quantities, maximum item prep and recent completions. Promise duration takes the higher of the model or fallback estimate and the outlet minimum. Manager changes are audited. The worker alerts once when an active ticket passes its current promise by ten minutes.
 - SSE replays the committed PostgreSQL event log. Separate streams expose outlet stock, outlet-scoped operations, or an individual opaque tracking token. Reconnect sends a cursor and refetches canonical state. The demo uses one-second DB polling per active stream and a 15-second recovery fetch when disconnected. Order board hydration uses batched queries. Multi-worker production would benefit from shared event fan-out and a proxy with SSE buffering disabled.
 - Reports use paid orders in the selected rolling placement window. Prep duration is measured from acceptance to ready. Repeat customers count verified numbers with at least two handoffs at that outlet in the window. Historical samples are excluded.
-- Street addresses require a pin or coordinates. There is no automatic address geocoder. Phone verification uses the local mock outbox. Reorder recommendations are outside the implemented slice. Real licence verification and production privacy review are required before taking real orders.
+- Address search uses Photon for Hyderabad street and landmark suggestions and labels them with delivery coverage. Search selections place a pin that can be refined on the map. The flat or unit details field stays in OrderDesk. Set `GEOCODER_URL` to your Photon instance for non-demo use. [Photon documentation](https://github.com/komoot/photon)
+- Street addresses require a pin or coordinates. Phone verification uses the local mock outbox. Reorder recommendations are outside the implemented slice. Real licence verification and production privacy review are required before taking real orders.
+
+## Demo pin sources
+
+These are reference locations in the named neighbourhoods. The data migration updates only original demo pins and preserves edited coordinates.
+
+- [Kondapur](https://mapcarta.com/15237278), [Kukatpally](https://mapcarta.com/14877212), [Jubilee Hills](https://mapcarta.com/28447788), [Banjara Hills](https://mapcarta.com/27417010), [Madhapur](https://mapcarta.com/15236322/Map), [Hitech City](https://mapcarta.com/24949550).
+- [Begumpet](https://mapcarta.com/N1986350814), [Secunderabad](https://mapcarta.com/37715290), [Ameerpet](https://mapcarta.com/37714860), [Manikonda](https://mapcarta.com/N2935018014), [Miyapur](https://mapcarta.com/N4711167390), [Sainikpuri](https://mapcarta.com/N2924400682).
+- [Dilsukhnagar](https://mapcarta.com/N2948197393), [Lb Nagar](https://mapcarta.com/26951330), [Gachibowli](https://mapcarta.com/N701232038), [Nallagandla](https://mapcarta.com/N2923222393), [Uppal](https://mapcarta.com/37719304).
 
 ## Development checks
 

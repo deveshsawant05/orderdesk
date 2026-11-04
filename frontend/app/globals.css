@@ -16,43 +16,6 @@
 
 
 
-/* Customer delivery pin and tracking map */
-.point-map { margin: 12px 0 18px; }
-.point-grid {
-  position: relative;
-  min-height: 190px;
-  background-color: #eee9e0;
-  background-image: linear-gradient(#d8d0c875 1px, transparent 1px),
-                    linear-gradient(90deg, #d8d0c875 1px, transparent 1px);
-  background-size: 24px 24px;
-  border: 1px solid var(--line);
-}
-.point-grid.pin-picker { cursor: crosshair; }
-.point-map figcaption { color: var(--muted); font-size: .8rem; margin-top: 8px; }
-.map-north { position: absolute; top: 10px; right: 12px; font: 700 .75rem var(--font); }
-.outlet-marker, .destination-marker {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border: 2px solid white;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  background: var(--blue);
-}
-.destination-marker { background: var(--brick); }
-.outlet-marker span, .destination-marker span {
-  position: absolute;
-  left: 50%;
-  bottom: 15px;
-  transform: translateX(-50%);
-  background: var(--paper);
-  padding: 3px 6px;
-  color: var(--ink);
-  font-size: .72rem;
-  white-space: nowrap;
-}
-.destination-marker span { bottom: auto; top: 15px; }
-
 /* Keep menu categories and dishes close to the top of the ordering page. */
 .menu-page .hero { min-height: 330px; max-height: 420px; }
 .menu-page .hero h1 { font-size: clamp(2.5rem,5vw,4.1rem); }
@@ -132,9 +95,6 @@
 .kitchen-party { margin: 24px 0; border-top: 1px solid #8a8593; padding-top: 16px; font-size: 1.12rem; }
 .report-list div { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); padding: 14px 0; }
 .report-list dd { margin: 0; font: 700 1rem ui-monospace, monospace; }
-.point-grid:not(.pin-picker) .outlet-marker { width: 19px; height: 19px; }
-.point-grid:not(.pin-picker) .destination-marker { width: 10px; height: 10px; }
-.point-grid:not(.pin-picker) .outlet-marker span, .point-grid:not(.pin-picker) .destination-marker span { max-width: 140px; white-space: normal; }
 @media (max-width: 590px) {
   .menu-page .hero { grid-template-columns: 1.14fr 1fr; }
   .menu-page .hero-copy { padding: 16px 12px; }
@@ -148,8 +108,6 @@
   .menu-page .section-heading { margin-top: 18px; }
 }
 
-.street-map { height: 245px; margin: 12px 0; border: 1px solid var(--line); z-index: 0; }
-.street-controls { display: grid; justify-items: start; gap: 3px; margin-bottom: 12px; }
 
 .kitchen-app .topbar { height: 66px; }
 .kitchen-app .kitchen-heading { padding-block: 20px; }
@@ -161,3 +119,80 @@
   .menu-page .hero-copy p { line-height: 1.35; }
   .menu-page .food-image { height: 162px; }
 }
+
+/* Street map, touch controls and the delivery sheet */
+.delivery-dialog.modal { width: min(720px, 96vw); max-height: min(94dvh, 960px); }
+.delivery-form > p { margin: 0 0 4px; }
+.street-map {
+  width: 100%;
+  height: clamp(240px, 39dvh, 410px);
+  margin: 12px 0 8px;
+  background: #eae6dd;
+  border: 1px solid var(--line);
+  z-index: 0;
+  touch-action: none;
+}
+.street-map.leaflet-container { touch-action: none; }
+.map-loading { display: grid; place-items: center; color: var(--muted); }
+.street-map.leaflet-container .leaflet-bar a { width: 44px; height: 44px; line-height: 44px; }
+.street-map .leaflet-control-attribution { line-height: 1.45; }
+.map-tile-error { font-size: .84rem; margin: 0; color: var(--brick); }
+.delivery-map-pin { cursor: grab; }
+.delivery-map-pin::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  width: 25px;
+  height: 25px;
+  transform: rotate(-45deg);
+  border: 2px solid white;
+  border-radius: 50% 50% 50% 0;
+  background: var(--brick);
+  box-shadow: 0 2px 6px #24212960;
+}
+.delivery-map-pin::after {
+  content: '';
+  position: absolute;
+  left: 15px;
+  top: 13px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: white;
+}
+.delivery-match {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--blue);
+  background: #efedf7;
+  font-size: .88rem;
+}
+.delivery-input-options { margin: 10px 0; }
+.delivery-input-options summary { cursor: pointer; padding: 8px 0; }
+.tracking-street-map > small { display: block; margin-top: 6px; }
+.tracking-street-map .street-map { height: 230px; }
+@media (max-width: 540px) {
+  .delivery-dialog.modal { width: 100%; max-width: 100%; margin: auto 0 0; max-height: 94dvh; }
+  .delivery-form .street-map { height: clamp(200px, 37dvh, 320px); }
+}
+
+.delivery-dialog.modal[open] { display:flex; flex-direction:column; overflow:hidden; }
+.delivery-dialog > header, .delivery-actions { flex:none; }
+.delivery-form { min-height:0; overflow-y:auto; overscroll-behavior:contain; }
+.delivery-actions { padding:10px 22px 14px; border-top:1px solid var(--line); background:var(--paper); }
+.road-distance { margin:8px 0 4px; color:var(--blue); }
+
+.delivery-search { margin-bottom:12px; }
+.delivery-search > label { margin-bottom:2px; font-weight:700; }
+.delivery-search-field { position:relative; margin-top:6px; }
+.delivery-search-field > svg { position:absolute; left:12px; top:50%; transform:translateY(-50%); pointer-events:none; }
+.delivery-search-field input { padding-left:38px; min-height:46px; }
+.delivery-suggestions { margin:5px 0 0; padding:0; list-style:none; }
+.delivery-suggestions button {
+  display:flex; gap:10px; align-items:flex-start; width:100%; text-align:left; padding:10px 9px;
+  border:0; border-bottom:1px solid var(--line); background:var(--paper); color:var(--ink);
+}
+.delivery-suggestions button:disabled { opacity:.64; }
+.delivery-suggestions button span { display:grid; gap:3px; }
+.delivery-suggestions button small { color:var(--muted); }

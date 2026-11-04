@@ -14,7 +14,11 @@ def serviceable(outlet, lat, lng):
     return outlet.is_open and lat is not None and lng is not None and distance_km(lat,lng,outlet.lat,outlet.lng) <= outlet.radius_km
 
 def eligible_outlets(db, lat, lng):
-    outlets = (o for o in db.scalars(select(Outlet)) if serviceable(o, lat, lng))
+    return outlets_by_radius(db.scalars(select(Outlet)), lat, lng)
+
+
+def outlets_by_radius(outlets, lat, lng):
+    outlets = (o for o in outlets if serviceable(o, lat, lng))
     return sorted(((distance_km(lat, lng, o.lat, o.lng), o) for o in outlets),
                   key=lambda entry: (entry[0], entry[1].id))
 

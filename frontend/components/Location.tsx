@@ -1,82 +1,169 @@
 'use client';
 
-import {useCallback,useState} from 'react';
+import {useCallback, useEffect, useId, useMemo, useRef, useState} from 'react';
 import dynamic from 'next/dynamic';
-import {ArrowRight, LocateFixed} from 'lucide-react';
+import {ArrowRight, LocateFixed, MapPin, Search} from 'lucide-react';
+import {api, useResource} from '@/lib/api';
 import {Cart, Outlet} from '@/lib/types';
 import {ErrorBox, Modal} from './ui';
+import type {Point} from './StreetMap';
 
-const StreetMap = dynamic(() => import('./StreetMap'), {ssr:false});
-const streetTileUrl = process.env.NEXT_PUBLIC_MAP_TILE_URL;
+const StreetMap = dynamic(() => import('./StreetMap'), {
+  ssr:false,
+  loading:() => <div className="street-map map-loading" role="status">Loading Hyderabad street map…</div>,
+});
 
-type Point = {lat: number; lng: number};
-type Marker = Point & {name: string};
+type PlaceSuggestion = Point & {title:string;context:string;outlet_name:string|null};
 
-export function PointMap({markers, point, choose}: {
-  markers: Marker[]; point: Point | null; choose?: (point: Point) => void;
-}) {
-  const points = choose ? markers : [...markers, ...(point ? [point] : [])];
-  if (!points.length) return null;
-  const padding = choose ? 0.025 : 0.005;
-  const west = Math.min(...points.map(p => p.lng)) - padding;
-  const east = Math.max(...points.map(p => p.lng)) + padding;
-  const north = Math.max(...points.map(p => p.lat)) + padding;
-  const south = Math.min(...points.map(p => p.lat)) - padding;
-  const x = (p: Point) => (p.lng - west) / (east - west) * 100;
-  const y = (p: Point) => (north - p.lat) / (north - south) * 100;
-  const plotPoint = point && x(point) >= 0 && x(point) <= 100 && y(point) >= 0 && y(point) <= 100;
-  return <figure className="point-map">
-    <div className={'point-grid'+(choose ? ' pin-picker' : '')} role={choose ? undefined : 'img'}
-      aria-label={choose ? undefined : 'Map of the assigned outlet and your destination'}
-      onClick={choose ? event => {
-        const bounds = event.currentTarget.getBoundingClientRect();
-        choose({
-          lat: Number((north - (event.clientY - bounds.top) / bounds.height * (north - south)).toFixed(6)),
-          lng: Number((west + (event.clientX - bounds.left) / bounds.width * (east - west)).toFixed(6)),
-        });
-      } : undefined}>
-      <span className="map-north" aria-hidden="true">↑ N</span>
-      {markers.map(marker => <span key={marker.name} className="outlet-marker"
-        style={{left:x(marker)+'%', top:y(marker)+'%'}} title={marker.name}>
-        {!choose && <span>{marker.name}</span>}
-      </span>)}
-      {plotPoint && <span className="destination-marker" style={{left:x(point)+'%', top:y(point)+'%'}}>
-        {!choose && <span>Destination</span>}
-      </span>}
+function AddressSearch({select}: {select:(place:PlaceSuggestion)=>void}) {
+  const [query, setQuery] = useState('');
+  const [debounced, setDebounced] = useState('');
+  const resultsList = useRef<HTMLUListElement>(null);
+  const resultsId = useId();
+  const trimmed = query.trim();
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(trimmed),650);
+    return () => clearTimeout(timer);
+  },[trimmed]);
+  const ready = trimmed.length >= 3 && debounced === trimmed;
+  const results = useResource<PlaceSuggestion[]>(ready ? '/places?q='+encodeURIComponent(debounced) : null);
+  const pick = (place:PlaceSuggestion) => {
+    select(place);
+    setQuery('');
+  };
+  return <div className="delivery-search">
+    <label htmlFor={resultsId+'-input'}>Search street or landmark</label>
+    <small>Searches OpenStreetMap via Photon. Enter private flat or unit details below.</small>
+    <div className="delivery-search-field"><Search size={18}/><input id={resultsId+'-input'} type="search"
+      autoComplete="off" maxLength={100} value={query} placeholder="Try HITEC City metro or Kondapur"
+      aria-controls={ready ? resultsId : undefined} onChange={event => setQuery(event.target.value)}
+      onKeyDown={event => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          const first = results.data?.find(place => place.outlet_name);
+          if (first) pick(first);
+        }
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          resultsList.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+        }
+      }}/>
     </div>
-    <figcaption>{choose
-      ? 'Tap the Hyderabad grid to place a pin, or enter coordinates below. Indigo dots mark demo outlets.'
-      : 'Indigo marks the assigned outlet. Brick red marks the destination.'} Schematic map · straight-line positions.</figcaption>
-  </figure>;
+    {ready && <>
+      {results.loading && <small role="status">Searching Hyderabad…</small>}
+      {results.data?.length === 0 && <small role="status">No matches. Try a nearby landmark or tap the map.</small>}
+      <ErrorBox message={results.error} retry={results.reload}/>
+      <ul className="delivery-suggestions" id={resultsId} ref={resultsList}>
+        {results.data?.map(place => <li key={`${place.title}:${place.context}:${place.lat},${place.lng}`}>
+          <button type="button" disabled={!place.outlet_name} onClick={() => pick(place)}>
+            <MapPin size={18} aria-hidden="true"/>
+            <span><strong>{place.title}</strong>{place.context && <small>{place.context}</small>}
+              <small>{place.outlet_name ? 'Delivered by '+place.outlet_name : 'Outside delivery radius'}</small></span>
+          </button>
+        </li>)}
+      </ul>
+    </>}
+  </div>;
+}
+
+type Serviceability = {
+  selected:string|null;
+  eligible:{id:string;name:string;distance_km:number}[];
+};
+
+function readPoint(lat:string,lng:string): Point|null {
+  if (!lat.trim() || !lng.trim()) return null;
+  const latitude = Number(lat);
+  const longitude = Number(lng);
+  return Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180 ? {lat:latitude,lng:longitude} : null;
+}
+
+type Route = {distance_km:number; path:Point[]};
+
+function useRoadRoute(key:string|null) {
+  const [current, setCurrent] = useState<{key:string;route?:Route;error?:string;busy?:boolean}|null>(null);
+  const sequence = useRef(0);
+  const load = async (url:string) => {
+    if (!key) return;
+    const request = ++sequence.current;
+    setCurrent({key,busy:true});
+    try {
+      const route = await api<Route>(url,'POST');
+      if (request === sequence.current) setCurrent({key,route});
+    } catch (failure) {
+      if (request === sequence.current) setCurrent({key,error:(failure as Error).message});
+    }
+  };
+  return {...(current?.key === key ? current : null),load};
+}
+
+const routeDisclosure = 'Road routing sends the outlet and pin coordinates to the routing provider. The demo provider logs requests.';
+
+export function TrackingMap({token, outlet, destination}: {token:string;outlet:Point&{name:string};destination:Point}) {
+  const [show, setShow] = useState(false);
+  const {lat, lng, name} = outlet;
+  const {lat:destinationLat, lng:destinationLng} = destination;
+  const markers = useMemo(() => [
+    {name,lat,lng},
+    {name:'Destination',lat:destinationLat,lng:destinationLng,destination:true},
+  ],[name,lat,lng,destinationLat,destinationLng]);
+  const road = useRoadRoute(token);
+  const load = () => road.load('/tracking/'+token+'/road-route');
+  return <div className="tracking-street-map">
+    <button type="button" className="secondary" aria-expanded={show} onClick={() => {
+      if (!show && !road.route && !road.busy) void load();
+      setShow(!show);
+    }}>{show ? 'Hide delivery map' : 'Show road route'}</button>
+    {!show && <small>{routeDisclosure}</small>}
+    {show && <>
+      <StreetMap markers={markers} route={road.route?.path}/>
+      {road.busy && <p role="status">Finding a driving route…</p>}
+      {road.route && <p className="road-distance"><strong>{road.route.distance_km.toFixed(2)} km by road</strong> · Outlet to destination</p>}
+      <ErrorBox message={road.error || ''} retry={load}/>
+      <small>Indigo · Assigned outlet &nbsp; Brick red · Destination{road.route && ' · Blue line · Driving route'}</small>
+      <small><a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noreferrer">Report a map issue</a></small>
+    </>}
+  </div>;
 }
 
 export default function Location({cart, outlets, close, save}: {
-  cart: Pick<Cart,'lat'|'lng'|'address'>; outlets: Outlet[]; close: () => void; save: (change: {lat:number;lng:number;address:string}) => Promise<unknown>;
+  cart:Pick<Cart,'lat'|'lng'|'address'>; outlets:Outlet[]; close:()=>void;
+  save:(change:{lat:number;lng:number;address:string})=>Promise<unknown>;
 }) {
+  const formId = useId();
   const [lat, setLat] = useState(cart.lat?.toString() ?? '');
   const [lng, setLng] = useState(cart.lng?.toString() ?? '');
   const [address, setAddress] = useState(cart.address);
+  const [focus, setFocus] = useState<Point|null>(() => cart.lat != null && cart.lng != null
+    ? {lat:cart.lat,lng:cart.lng} : null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [street, showStreet] = useState(false);
-  const [tileError, setTileError] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const point = useMemo(() => readPoint(lat,lng),[lat,lng]);
+  const [checkedPoint, setCheckedPoint] = useState<Point|null>(null);
+  useEffect(() => {
+    const timer = setTimeout(() => setCheckedPoint(point),180);
+    return () => clearTimeout(timer);
+  },[point]);
+  const matchesPoint = point !== null && checkedPoint === point;
+  const service = useResource<Serviceability>(matchesPoint
+    ? `/serviceability?lat=${point.lat}&lng=${point.lng}` : null);
+  const match = matchesPoint ? service.data?.eligible[0] : undefined;
+  const outlet = outlets.find(entry => entry.id === match?.id);
   const choose = useCallback((point: Point) => {
     setLat(String(point.lat));
     setLng(String(point.lng));
     setError('');
   },[]);
-  const unavailable = useCallback(() => {
-    showStreet(false);
-    setTileError(true);
-  },[]);
-  const point = lat && lng ? {lat:Number(lat),lng:Number(lng)} : null;
-  return <Modal title="Set your delivery point" close={close}>
-    <form className="modal-body" onSubmit={async event => {
+
+  return <Modal title="Set your delivery point" close={close} className="delivery-dialog">
+    <form id={formId} className="modal-body delivery-form" onSubmit={async event => {
       event.preventDefault();
+      if (!point || !match) return;
       setBusy(true);
       setError('');
       try {
-        await save({address, lat:Number(lat), lng:Number(lng)});
+        await save({...point,address});
         close();
       } catch (failure) {
         setError((failure as Error).message);
@@ -84,45 +171,66 @@ export default function Location({cart, outlets, close, save}: {
         setBusy(false);
       }
     }}>
-      <p>We’ll match your point to the nearest open kitchen within its service radius.</p>
-      {street && streetTileUrl
-        ? <StreetMap markers={outlets} point={point} choose={choose} unavailable={unavailable} tileUrl={streetTileUrl}/>
-        : <PointMap markers={outlets} point={point} choose={choose}/>}
-      {streetTileUrl && <div className="street-controls">
-        <small>{tileError ? 'Street tiles are unavailable. The delivery grid and coordinate fields still work.' : 'Street tiles request the visible map area from the configured provider. Your address is entered here separately.'}</small>
-        <button type="button" className="text-button" onClick={() => {setTileError(false);showStreet(!street);}}>
-          {street ? 'Use delivery grid' : 'Load street map'}
-        </button>
-      </div>}
-      <label>Try a demo delivery point
-        <select defaultValue="" onChange={event => {
-          const point = outlets.find(entry => entry.id === event.target.value);
-          if (!point) return;
-          choose(point);
-          setAddress(point.address);
-        }}>
-          <option value="">Select a neighbourhood point</option>
-          {outlets.map(outlet => <option key={outlet.id} value={outlet.id}>{outlet.name}</option>)}
-        </select>
-      </label>
-      <button type="button" className="secondary full" onClick={() => {
+      <AddressSearch select={place => {
+        choose(place);
+        setFocus(place);
+        setAddress([place.title,place.context].filter(Boolean).join(', '));
+      }}/>
+      <p>Scroll or pinch to zoom. Tap the map or drag the pin to refine your location.</p>
+      <small>Indigo dots mark demo kitchens. The map provider receives tile requests for the visible area.</small>
+      {outlets.length > 0
+        ? <StreetMap markers={outlets} point={point} focus={focus} choose={choose} coverage={outlet}/>
+        : <div className="street-map map-loading" role="status">Loading outlet locations…</div>}
+      <div className="delivery-match" role="status">
+        {!point ? 'Place a delivery pin to check nearby kitchens.'
+          : !matchesPoint || service.loading ? 'Checking delivery coverage…'
+          : match ? <><strong>{match.name}</strong> · {match.distance_km.toFixed(2)} km straight-line{outlet ? ` · ${outlet.radius_km} km service radius` : ''}</>
+          : !service.error ? 'No open kitchen delivers to this pin. Try a nearby point.' : 'Coverage could not be checked.'}
+      </div>
+      <ErrorBox message={matchesPoint ? service.error : ''} retry={service.reload}/>
+      <button type="button" className="secondary full" disabled={locating} onClick={() => {
         if (!navigator.geolocation) {
-          setError('Location access is unavailable. Use the grid or enter coordinates.');
+          setError('Location access is unavailable. Tap the map or enter coordinates.');
           return;
         }
-        navigator.geolocation.getCurrentPosition(
-          position => choose({lat:position.coords.latitude, lng:position.coords.longitude}),
-          () => setError('Location access is unavailable. Use the grid or enter coordinates.'),
-          {timeout:8000},
-        );
-      }}><LocateFixed size={18}/> Use my current location</button>
-      <div className="form-grid">
-        <label>Latitude<input required type="number" step="any" min="-90" max="90" value={lat} onChange={event => setLat(event.target.value)}/></label>
-        <label>Longitude<input required type="number" step="any" min="-180" max="180" value={lng} onChange={event => setLng(event.target.value)}/></label>
-      </div>
-      <label>Delivery address<input required minLength={5} maxLength={300} value={address} onChange={event => setAddress(event.target.value)} placeholder="Flat, building, street and landmark"/></label>
+        setLocating(true);
+        navigator.geolocation.getCurrentPosition(position => {
+          const here = {lat:Number(position.coords.latitude.toFixed(6)),lng:Number(position.coords.longitude.toFixed(6))};
+          choose(here);
+          setFocus(here);
+          setLocating(false);
+        }, () => {
+          setError('Location access is unavailable. Tap the map or enter coordinates.');
+          setLocating(false);
+        },{timeout:8000});
+      }}><LocateFixed size={18}/> {locating ? 'Finding your location…' : 'Use my current location'}</button>
+      <label>Delivery address<input required minLength={5} maxLength={300} value={address}
+        onChange={event => setAddress(event.target.value)} placeholder="Flat, building, street and landmark"/></label>
+      <details className="delivery-input-options">
+        <summary>Demo points and manual coordinates</summary>
+        <label>Try a demo delivery point
+          <select defaultValue="" onChange={event => {
+            const outlet = outlets.find(entry => entry.id === event.target.value);
+            if (!outlet) return;
+            choose(outlet);
+            setFocus(outlet);
+            setAddress(outlet.address);
+          }}>
+            <option value="">Select a neighbourhood point</option>
+            {outlets.map(outlet => <option key={outlet.id} value={outlet.id}>{outlet.name}</option>)}
+          </select>
+        </label>
+        <div className="form-grid">
+          <label>Latitude<input type="number" step="any" min="-90" max="90" value={lat} onChange={event => setLat(event.target.value)}/></label>
+          <label>Longitude<input type="number" step="any" min="-180" max="180" value={lng} onChange={event => setLng(event.target.value)}/></label>
+        </div>
+      </details>
       <ErrorBox message={error}/>
-      <button className="primary full" disabled={busy}>Confirm location <ArrowRight size={18}/></button>
     </form>
+    <div className="delivery-actions">
+      <button type="submit" form={formId} className="primary full" disabled={busy || !match || !!service.error}>
+        Confirm location <ArrowRight size={18}/>
+      </button>
+    </div>
   </Modal>;
 }

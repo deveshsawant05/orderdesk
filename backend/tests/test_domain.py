@@ -24,6 +24,9 @@ def test_seed_exact_records_and_safe_rerun(db):
     assert db.scalar(select(func.count()).select_from(Order))==3
 
 def test_radius_routing_and_closed_outlets(db,client):
+    for outlet in client.get('/outlets').json():
+        result = client.get('/serviceability', params={'lat':outlet['lat'],'lng':outlet['lng']}).json()
+        assert result['selected'] == outlet['id']
     signin(client)
     o=db.get(Outlet,'kondapur')
     assert distance_km(o.lat,o.lng,o.lat,o.lng)==0
@@ -170,3 +173,51 @@ def test_empty_cart_invalid_location_and_duplicate_options(client,db):
     # Persisting removal-only edits does not permit a bad address to check out.
     assert client.put('/cart',json=body).status_code==422
     assert client.post('/payments',json={'method':'UPI','idempotency_key':'outside-test-key','cart_version':c['version'],**CONTACT,'phone':'invalid'}).status_code==422
+
+def test_tracking_road_route_uses_only_saved_endpoints(client, db, monkeypatch):
+    from app import road_routing
+
+    signin(client)
+    _, result = pay(client, fill_cart(client))
+    order = by_ref(db, result['order']['id'])
+    outlet = db.get(Outlet, order.outlet_id)
+    expected_origin = (outlet.lat, outlet.lng)
+    expected_destination = (order.destination_lat, order.destination_lng)
+
+    def mock_route(_url, points):
+        assert points == (expected_origin, expected_destination)
+        return {'routes':[{'distance':2150,'geometry':{'coordinates':[
+            expected_origin[::-1], expected_destination[::-1],
+        ]}}]}
+
+    road_routing.route_geometry.cache_clear()
+    monkeypatch.setattr(road_routing, 'request_router', mock_route)
+    monkeypatch.setenv('ROUTING_API_URL', 'http://road-test.invalid')
+    try:
+        assert client.post(f'/tracking/{order.public_ref}/road-route').status_code == 404
+        response = client.post(f'/tracking/{order.tracking_token}/road-route')
+        assert response.status_code == 200, response.text
+        assert response.json()['distance_km'] == 2.15
+        assert response.json()['path'][0] == {'lat':outlet.lat,'lng':outlet.lng}
+    finally:
+        road_routing.route_geometry.cache_clear()
+
+def test_place_suggestions_prioritize_in_radius_results(client, db, monkeypatch):
+    from app import places
+
+    kondapur = db.get(Outlet, 'kondapur')
+
+    def feature(name, lat, lng):
+        return {'geometry':{'coordinates':[lng,lat]}, 'properties':{'name':name,'city':'Hyderabad'}}
+
+    monkeypatch.setenv('GEOCODER_URL', 'http://geocoder-test.invalid')
+    monkeypatch.setattr(places, 'search_photon', lambda *_: [
+        feature('Outside coverage', 17.22, 78.24),
+        feature('Kondapur landmark', kondapur.lat, kondapur.lng),
+        feature('Outside Hyderabad', 19.0, 78.0),
+    ])
+    response = client.get('/places', params={'q':'landmark'})
+    assert response.status_code == 200, response.text
+    assert [(row['title'],row['outlet_name']) for row in response.json()] == [
+        ('Kondapur landmark','Kondapur'), ('Outside coverage',None),
+    ]
