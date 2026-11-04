@@ -12,3 +12,5 @@ artifacts/
 *.log
 backend/.coverage
 .env.local
+*.tsbuildinfo
+frontend/next-env.d.ts

@@ -23,12 +23,23 @@ services:
     ports: ["127.0.0.1:8010:8000"]
     depends_on:
       db: {condition: service_healthy}
-    command: sh -c "alembic upgrade head && python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        alembic upgrade head
+        if [ "$$DEMO_MODE" = true ]; then python -m app.seed; fi
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log
   web:
     build:
       context: ./frontend
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8010}
+        NEXT_PUBLIC_MAP_TILE_URL: ${NEXT_PUBLIC_MAP_TILE_URL:-}
+        NEXT_PUBLIC_MAP_ATTRIBUTION: ${NEXT_PUBLIC_MAP_ATTRIBUTION:-}
+    environment:
+      API_INTERNAL_URL: http://api:8000
     ports: ["127.0.0.1:3010:3000"]
     depends_on: [api]
 volumes:
