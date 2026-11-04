@@ -104,8 +104,8 @@ export function TrackingMap({token, outlet, destination}: {token:string;outlet:P
   const {lat, lng, name} = outlet;
   const {lat:destinationLat, lng:destinationLng} = destination;
   const markers = useMemo(() => [
-    {name,lat,lng},
-    {name:'Destination',lat:destinationLat,lng:destinationLng,destination:true},
+    {name,lat,lng,endpoint:'hotel' as const},
+    {name:'Drop location',lat:destinationLat,lng:destinationLng,endpoint:'drop' as const},
   ],[name,lat,lng,destinationLat,destinationLng]);
   const road = useRoadRoute(token);
   const load = () => road.load('/tracking/'+token+'/road-route');
@@ -120,7 +120,7 @@ export function TrackingMap({token, outlet, destination}: {token:string;outlet:P
       {road.busy && <p role="status">Finding a driving route…</p>}
       {road.route && <p className="road-distance"><strong>{road.route.distance_km.toFixed(2)} km by road</strong> · Outlet to destination</p>}
       <ErrorBox message={road.error || ''} retry={load}/>
-      <small>Indigo · Assigned outlet &nbsp; Brick red · Destination{road.route && ' · Blue line · Driving route'}</small>
+      <small>Hotel · {name} &nbsp; | &nbsp; Drop location{road.route && ' · Blue line shows the driving route'}</small>
       <small><a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noreferrer">Report a map issue</a></small>
     </>}
   </div>;

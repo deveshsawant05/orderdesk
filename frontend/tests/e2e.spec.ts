@@ -102,7 +102,15 @@ test('guest test payment routes to manager, kitchen and secure SSE tracker',asyn
   });
   await page.getByRole('button',{name:'Show road route'}).click();
   await expect(page.getByText('2.15 km by road')).toBeVisible();
-  await expect(page.locator('.delivery-road-route')).toBeVisible();
+  const orderMap = page.getByRole('region',{name:'Outlet and destination street map'});
+  const hotel = orderMap.getByRole('img',{name:'Hotel · Kondapur'});
+  const drop = orderMap.getByRole('img',{name:'Drop location'});
+  await expect(hotel).toBeVisible();
+  await expect(drop).toBeVisible();
+  const hotelBounds = (await hotel.boundingBox())!;
+  expect(hotelBounds.y+hotelBounds.height).toBeLessThan((await drop.boundingBox())!.y);
+  await expect(orderMap.locator('.delivery-road-route')).toBeVisible();
+  await orderMap.scrollIntoViewIfNeeded();
   await page.screenshot({path:'../artifacts/tracking-desktop.png'});
   const ready = await (await page.request.get(api+'/tracking/'+token)).json();
   const cursor = ready.events.at(-1).id;
