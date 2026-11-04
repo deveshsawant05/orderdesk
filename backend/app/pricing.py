@@ -13,6 +13,12 @@ def distance_km(lat1, lng1, lat2, lng2):
 def serviceable(outlet, lat, lng):
     return outlet.is_open and lat is not None and lng is not None and distance_km(lat,lng,outlet.lat,outlet.lng) <= outlet.radius_km
 
+def eligible_outlets(db, lat, lng):
+    outlets = (o for o in db.scalars(select(Outlet)) if serviceable(o, lat, lng))
+    return sorted(((distance_km(lat, lng, o.lat, o.lng), o) for o in outlets),
+                  key=lambda entry: (entry[0], entry[1].id))
+
+
 def time_available(item, at=None):
     hour = (at or now()).astimezone(IST).hour
     if item.start_hour == item.end_hour:
@@ -26,9 +32,11 @@ def gst_inclusive(paise):
     return (paise + 10) // 21
 
 def quote(db, outlet_id, lines, lat, lng, coupon='', lock=False):
-    outlet = db.get(Outlet,outlet_id)
-    if not outlet or not serviceable(outlet,lat,lng):
-        raise HTTPException(422,'This address is outside the selected outlet’s delivery area, or the outlet is closed.')
+    outlet = db.get(Outlet, outlet_id) if outlet_id else None
+    if outlet_id:
+        eligible = eligible_outlets(db, lat, lng)
+        if not eligible or eligible[0][1].id != outlet_id:
+            raise HTTPException(422,'The assigned outlet changed or this address is unserviceable. Confirm your delivery point again.')
     output=[]
     # Stable lock ordering prevents concurrent CMS edits from racing payment validation.
     ids=sorted({line['item_id'] for line in lines})
@@ -42,7 +50,7 @@ def quote(db, outlet_id, lines, lat, lng, coupon='', lock=False):
     stocks={s.item_id:s.available for s in db.scalars(stocks_query)}
     for line in lines:
         item=items.get(line['item_id'])
-        if not item or not item.active or not stocks.get(item.id,False) or not time_available(item):
+        if not item or not item.active or (outlet is not None and not stocks.get(item.id,False)) or not time_available(item):
             raise HTTPException(409,f'{item.name if item else "An item"} is currently unavailable. Remove it from your bag.')
         if line['menu_version'] != item.version:
             raise HTTPException(409,f'{item.name} has changed. Remove it and add it again to review the current price and options.')
@@ -52,7 +60,8 @@ def quote(db, outlet_id, lines, lat, lng, coupon='', lock=False):
         if line['portion'] not in portions or len(set(selected)) != len(selected) or any(a not in addons for a in selected):
             raise HTTPException(422,'This customization is no longer available.')
         portion=portions[line['portion']]
-        price=item.city_prices.get(outlet.city,item.price_paise)+portion['price_paise']+sum(addons[a]['price_paise'] for a in selected)
+        base = item.city_prices.get(outlet.city,item.price_paise) if outlet else item.price_paise
+        price=base+portion['price_paise']+sum(addons[a]['price_paise'] for a in selected)
         output.append({**line,'name':item.name,'image':item.image,'portion_name':portion['name'],'addon_names':[addons[a]['name'] for a in selected], 'unit_paise':price,'line_paise':price*line['quantity'],'prep_minutes':item.prep_minutes})
     subtotal=sum(l['line_paise'] for l in output)
     discount=0

@@ -36,7 +36,12 @@ def client(db):
     return TestClient(app,headers={'X-OrderDesk':'1','Origin':os.environ['APP_ORIGIN']})
 
 def signin(client,role='customer',outlet_id=None):
-    response=client.post('/auth/demo',json={'role':role,'outlet_id':outlet_id})
+    client.headers['X-OrderDesk-Experience'] = 'customer' if role == 'customer' else 'staff'
+    if role == 'customer':
+        response = client.post('/auth/guest')
+    else:
+        email = 'admin@orderdesk.demo' if role == 'manager' and not outlet_id else f'{role}.{outlet_id}@orderdesk.demo'
+        response = client.post('/auth/login', json={'email':email,'password':os.environ['DEMO_PASSWORD']})
     assert response.status_code==200,response.text
     return response.json()
 
@@ -48,8 +53,11 @@ def fill_cart(client,outlet_id='kondapur',item_id='chicken',quantity=1,portion='
     response=client.put('/cart',json=body); assert response.status_code==200,response.text
     return response.json()
 
+CONTACT = {'name':'Test Guest', 'phone':'6000000000'}
+
+
 def pay(client,cart,key='test-payment-key',outcome='success'):
-    r=client.post('/payments',json={'method':'UPI','idempotency_key':key,'cart_version':cart['version']});assert r.status_code==200,r.text
+    r=client.post('/payments',json={'method':'UPI','idempotency_key':key,'cart_version':cart['version'],**CONTACT});assert r.status_code==200,r.text
     payment=r.json()
     r=client.post('/payments/'+payment['id']+'/confirm',json={'outcome':outcome});assert r.status_code==200,r.text
     return payment,r.json()

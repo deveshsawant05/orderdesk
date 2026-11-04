@@ -5,15 +5,19 @@ from app.pricing import distance_km,serviceable,gst_inclusive,time_available
 from app.prediction import predict,MODEL_ID
 from app.events import escalate_late
 from app.seed import seed
-from .conftest import signin,fill_cart,pay
+from .conftest import signin,fill_cart,pay,CONTACT
+
+
+def by_ref(db, ref):
+    return db.scalar(select(Order).where(Order.public_ref == ref))
 
 def test_seed_exact_records_and_safe_rerun(db):
     assert db.scalar(select(func.count()).select_from(Outlet))==17
     assert db.scalar(select(func.count()).select_from(Outlet).where(Outlet.kind=='restaurant'))==14
     for id,amount,status,method in [('WEB-778120',118000,'preparing','UPI'),('WEB-778131',64000,'ready','Card'),('WEB-778146',105000,'preparing','UPI')]:
-        o=db.get(Order,id);assert (o.total_paise,o.status,db.get(Payment,o.payment_id).method)==(amount,status,method)
-        assert sum(i.quantity*i.unit_paise for i in db.scalars(select(OrderItem).where(OrderItem.order_id==id)))==amount
-    third=db.get(Order,'WEB-778146');assert (third.snapshot_observed_at-third.promised_at).total_seconds()==240
+        o=by_ref(db,id);assert (o.total_paise,o.status,db.get(Payment,o.payment_id).method)==(amount,status,method)
+        assert sum(i.quantity*i.unit_paise for i in db.scalars(select(OrderItem).where(OrderItem.order_id==o.id)))==amount
+    third=by_ref(db,'WEB-778146');assert (third.snapshot_observed_at-third.promised_at).total_seconds()==240
     item=db.get(MenuItem,'chicken');item.description='User-authored persistent edit';db.commit()
     seed(db);db.expire_all()
     assert db.get(MenuItem,'chicken').description=='User-authored persistent edit'
@@ -61,8 +65,8 @@ def test_payment_idempotency_and_historical_price(client,db):
     assert client.get('/cart').json()['lines']==[]
     item=db.get(MenuItem,'chicken');item.price_paise=99900;db.commit()
     assert client.get('/orders/'+order['id']).json()['total_paise']==36000
-    assert db.scalar(select(Event).where(Event.order_id==order['id'],Event.kind=='order_created'))
-    estimate=db.get(Estimate,order['id']);assert estimate.promised_minutes>=estimate.minimum_minutes
+    assert db.scalar(select(Event).where(Event.order_id==by_ref(db,order['id']).id,Event.kind=='order_created'))
+    estimate=db.get(Estimate,by_ref(db,order['id']).id);assert estimate.promised_minutes>=estimate.minimum_minutes
 
 def test_failed_cancelled_and_retry_payments(client,db):
     signin(client);cart=fill_cart(client)
@@ -74,7 +78,7 @@ def test_failed_cancelled_and_retry_payments(client,db):
 
 def test_payment_revalidates_stock_price_and_cart(client,db):
     signin(client);cart=fill_cart(client)
-    p=client.post('/payments',json={'method':'Card','idempotency_key':'stock-test','cart_version':cart['version']}).json()
+    p=client.post('/payments',json={'method':'Card','idempotency_key':'stock-test','cart_version':cart['version'],**CONTACT}).json()
     stock=db.get(Availability,('kondapur','chicken'));stock.available=False;db.commit()
     assert client.post('/payments/'+p['id']+'/confirm',json={'outcome':'success'}).status_code==409
     stock.available=True;db.get(MenuItem,'chicken').version+=1;db.commit()
@@ -82,7 +86,7 @@ def test_payment_revalidates_stock_price_and_cart(client,db):
     assert db.get(Payment,p['id']).status=='pending'
 
 def test_stock_change_is_outlet_scoped(client,db):
-    signin(client,'kitchen','kondapur')
+    signin(client,'manager','kondapur')
     assert client.put('/availability/kondapur/chicken',json={'available':False}).status_code==200
     assert not client.get('/menu?outlet_id=kondapur').json()['items'][0]['available']
     assert next(i for i in client.get('/menu?outlet_id=kukatpally').json()['items'] if i['id']=='chicken')['available']
@@ -95,12 +99,15 @@ def test_state_machine_stale_version_and_permissions(client,db):
     assert client.get('/orders/'+o['id']).status_code==403
     assert client.get('/orders?outlet_id=kondapur').status_code==403
     signin(client,'kitchen','kondapur')
+    assert client.post('/orders/'+o['id']+'/status',json={'status':'preparing','version':1}).status_code==403
     assert client.post('/orders/'+o['id']+'/status',json={'status':'ready','version':1}).status_code==409
+    signin(client,'manager','kondapur')
     assert client.post('/orders/'+o['id']+'/status',json={'status':'preparing','version':1}).status_code==200
     assert client.post('/orders/'+o['id']+'/status',json={'status':'preparing','version':1}).status_code==409
+    signin(client,'kitchen','kondapur')
     assert client.post('/orders/'+o['id']+'/status',json={'status':'ready','version':2}).status_code==200
     assert client.post('/orders/'+o['id']+'/status',json={'status':'handed_off','version':3}).status_code==200
-    db.expire_all();assert db.get(Order,o['id']).status=='handed_off'
+    db.expire_all();assert by_ref(db,o['id']).status=='handed_off'
 
 def test_prediction_real_model_and_fallback(db):
     o=db.get(Outlet,'kondapur');lines=[{'quantity':2,'prep_minutes':30}]
@@ -115,20 +122,21 @@ def test_prediction_real_model_and_fallback(db):
 
 def test_late_escalation_once_and_manager_override(client,db):
     signin(client);_,r=pay(client,fill_cart(client));id=r['order']['id']
-    o=db.get(Order,id);o.placed_at=now()-timedelta(hours=2);o.promised_at=now()-timedelta(minutes=11);db.commit()
+    o=by_ref(db,id);o.placed_at=now()-timedelta(hours=2);o.promised_at=now()-timedelta(minutes=11);db.commit()
     assert escalate_late(db)==1
     assert escalate_late(db)==0
-    assert len(db.scalars(select(Notification).where(Notification.order_id==id,Notification.kind=='late')).all())==2
-    signin(client,'kitchen','kondapur')
+    assert len(db.scalars(select(Notification).where(Notification.order_id==o.id,Notification.kind=='late')).all())==2
+    signin(client,'manager','kondapur')
     r=client.post('/orders/'+id+'/override',json={'version':1,'minutes_from_now':20,'reason':'Extra time on dum needed.'})
     assert r.status_code==200,r.text
-    db.expire_all();o=db.get(Order,id);assert o.revised_at>now() and o.promised_at<now()
-    assert db.scalar(select(Override).where(Override.order_id==id))
+    db.expire_all();o=by_ref(db,id);assert o.revised_at>now() and o.promised_at<now()
+    assert db.scalar(select(Override).where(Override.order_id==o.id))
 
 def test_auth_privacy_csrf_and_consent(client,db):
-    assert client.get('/menu?outlet_id=kondapur').status_code==401
-    assert client.post('/auth/demo',json={'role':'customer'},headers={'X-OrderDesk':'0'}).status_code==403
-    assert client.post('/auth/demo',json={'role':'customer'},headers={'Origin':'https://evil.example'}).status_code==403
+    assert client.get('/menu').status_code==200
+    assert client.get('/menu').json()['items'][0]['in_stock'] is None
+    assert client.post('/auth/guest',headers={'X-OrderDesk':'0'}).status_code==403
+    assert client.post('/auth/guest',headers={'Origin':'https://evil.example'}).status_code==403
     r=client.post('/auth/register',json={'email':'test-only@example.invalid','name':'Test Only','password':'synthetic-test-password'})
     assert r.status_code==200,r.text
     assert not r.json()['marketing_consent']
@@ -139,7 +147,7 @@ def test_auth_privacy_csrf_and_consent(client,db):
     assert client.get('/auth/me').status_code==401
 
 def test_admin_menu_edit_archive_and_snapshot_immutable(client,db):
-    signin(client,'admin')
+    signin(client,'manager')
     item=client.get('/admin/menu?outlet_id=kondapur').json()[0]
     body={k:v for k,v in item.items() if k not in ('id','effective_price_paise','available','in_stock','time_available')}
     body['price_paise']=42000;body['city_prices']={'Hyderabad':43000};body['description']='A revised description from the CMS.'
@@ -155,11 +163,10 @@ def test_admin_menu_edit_archive_and_snapshot_immutable(client,db):
 def test_empty_cart_invalid_location_and_duplicate_options(client,db):
     signin(client)
     c=client.get('/cart').json()
-    assert client.post('/payments',json={'method':'UPI','idempotency_key':'empty-test-key','cart_version':c['version']}).status_code==422
+    assert client.post('/payments',json={'method':'UPI','idempotency_key':'empty-test-key','cart_version':c['version'],**CONTACT}).status_code==422
     c=fill_cart(client)
     body={k:c[k] for k in ['outlet_id','lines','address','lat','lng','coupon','version']}
     body['lat']=0;body['lng']=0
     # Persisting removal-only edits does not permit a bad address to check out.
-    client.put('/cart',json=body)
-    c=client.get('/cart').json();assert c['validation_error']
-    assert client.post('/payments',json={'method':'UPI','idempotency_key':'outside-test-key','cart_version':c['version']}).status_code==422
+    assert client.put('/cart',json=body).status_code==422
+    assert client.post('/payments',json={'method':'UPI','idempotency_key':'outside-test-key','cart_version':c['version'],**CONTACT,'phone':'invalid'}).status_code==422

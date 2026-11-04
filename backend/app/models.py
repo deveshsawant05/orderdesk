@@ -1,6 +1,7 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from secrets import token_urlsafe
 import uuid
-from sqlalchemy import String, Integer, Boolean, Float, DateTime, ForeignKey, JSON, Text, UniqueConstraint, CheckConstraint, Index
+from sqlalchemy import String, Integer, Boolean, Float, Date, DateTime, ForeignKey, JSON, Text, UniqueConstraint, CheckConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -38,13 +39,14 @@ class User(Base):
     marketing_consent: Mapped[bool] = mapped_column(Boolean, default=False)
     consent_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     demo: Mapped[bool] = mapped_column(Boolean, default=False)
-    __table_args__ = (CheckConstraint("role IN ('customer', 'kitchen', 'admin')"),)
+    __table_args__ = (CheckConstraint("role IN ('customer', 'kitchen', 'manager')"),)
 
 class Session(Base):
     __tablename__ = 'sessions'
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    verified_phone: Mapped[str | None] = mapped_column(String(10))
 
 class Category(Base):
     __tablename__ = 'categories'
@@ -114,7 +116,20 @@ class Payment(Base):
 
 class Order(Base):
     __tablename__ = 'orders'
-    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=uid)
+    public_ref: Mapped[str] = mapped_column(String(40))
+    tracking_token: Mapped[str] = mapped_column(String(64), default=lambda: token_urlsafe(32))
+    service_date: Mapped[date] = mapped_column(Date)
+    daily_number: Mapped[int] = mapped_column(Integer)
+    destination_lat: Mapped[float | None] = mapped_column(Float)
+    destination_lng: Mapped[float | None] = mapped_column(Float)
+    contact_name: Mapped[str | None] = mapped_column(String(80))
+    contact_phone: Mapped[str | None] = mapped_column(String(10))
+    resolution_reason: Mapped[str | None] = mapped_column(String(300))
+    refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    loyalty_phone: Mapped[str | None] = mapped_column(ForeignKey('loyalty_accounts.phone'))
+    redeemed_points: Mapped[int] = mapped_column(Integer, default=0)
     user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
     outlet_id: Mapped[str] = mapped_column(ForeignKey('outlets.id'), index=True)
     payment_id: Mapped[str] = mapped_column(ForeignKey('payments.id'), unique=True)
@@ -131,7 +146,14 @@ class Order(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     snapshot: Mapped[bool] = mapped_column(Boolean, default=False)
     snapshot_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    __table_args__ = (CheckConstraint('total_paise >= 0 AND total_paise = subtotal_paise - discount_paise'), CheckConstraint("status IN ('new','preparing','ready','handed_off','cancelled')"), Index('ix_orders_outlet_status', 'outlet_id','status'))
+    __table_args__ = (CheckConstraint('total_paise >= 0 AND total_paise = subtotal_paise - discount_paise'), CheckConstraint("status IN ('new','preparing','ready','handed_off','cancelled')"), Index('ix_orders_outlet_status', 'outlet_id','status'), UniqueConstraint('public_ref', name='uq_order_public_ref'), UniqueConstraint('tracking_token', name='uq_order_tracking_token'), UniqueConstraint('outlet_id','service_date','daily_number', name='uq_outlet_service_number'))
+
+class DailyCounter(Base):
+    __tablename__ = 'daily_counters'
+    outlet_id: Mapped[str] = mapped_column(ForeignKey('outlets.id'), primary_key=True)
+    service_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    last_number: Mapped[int] = mapped_column(Integer)
+
 
 class OrderItem(Base):
     __tablename__ = 'order_items'
@@ -161,6 +183,7 @@ class Event(Base):
     outlet_id: Mapped[str | None] = mapped_column(ForeignKey('outlets.id'), index=True)
     user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), index=True)
     order_id: Mapped[str | None] = mapped_column(ForeignKey('orders.id'), index=True)
+    party_id: Mapped[str | None] = mapped_column(ForeignKey('party_requests.id'), index=True)
     payload: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -200,3 +223,55 @@ class PredictionModel(Base):
     feature_names: Mapped[list] = mapped_column(JSON)
     metrics: Mapped[dict] = mapped_column(JSON)
     trained_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class LoyaltyAccount(Base):
+    __tablename__ = 'loyalty_accounts'
+    phone: Mapped[str] = mapped_column(String(10), primary_key=True)
+    balance: Mapped[int] = mapped_column(Integer, default=0)
+    __table_args__ = (CheckConstraint('balance >= 0'),)
+
+
+class LoyaltyTransaction(Base):
+    __tablename__ = 'loyalty_transactions'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    phone: Mapped[str] = mapped_column(ForeignKey('loyalty_accounts.phone'))
+    order_id: Mapped[str] = mapped_column(ForeignKey('orders.id'))
+    kind: Mapped[str] = mapped_column(String(20))
+    points: Mapped[int] = mapped_column(Integer)
+    __table_args__ = (UniqueConstraint('order_id', 'kind'),)
+
+
+class OtpChallenge(Base):
+    __tablename__ = 'otp_challenges'
+    session_id: Mapped[str] = mapped_column(ForeignKey('sessions.token_hash', ondelete='CASCADE'), primary_key=True)
+    phone: Mapped[str] = mapped_column(String(10))
+    code_hash: Mapped[str] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class DemoMessage(Base):
+    __tablename__ = 'demo_messages'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    kind: Mapped[str] = mapped_column(String(30))
+    destination: Mapped[str] = mapped_column(String(10))
+    body: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class PartyRequest(Base):
+    __tablename__ = 'party_requests'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    token: Mapped[str] = mapped_column(String(64), default=lambda: token_urlsafe(32), unique=True)
+    outlet_id: Mapped[str] = mapped_column(ForeignKey('outlets.id'), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    phone: Mapped[str] = mapped_column(String(10))
+    address: Mapped[str] = mapped_column(String(300))
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    items: Mapped[list] = mapped_column(JSON)
+    notes: Mapped[str] = mapped_column(String(500), default='')
+    status: Mapped[str] = mapped_column(String(20), default='pending')
+    reason: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (CheckConstraint("status IN ('pending','accepted','rejected')"),)

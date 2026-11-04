@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 class Strict(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
@@ -19,10 +19,6 @@ class Register(Login):
             raise ValueError('Enter a valid email address')
         return v.lower()
 
-class Demo(Strict):
-    role: Literal['customer','kitchen','admin']
-    outlet_id: str | None = None
-
 class Line(Strict):
     item_id: str
     portion: str
@@ -31,11 +27,11 @@ class Line(Strict):
     menu_version: int = Field(ge=1)
 
 class CartUpdate(Strict):
-    outlet_id: str
+    outlet_id: str | None = None
     lines: list[Line] = Field(max_length=40)
     address: str = Field(default='',max_length=300)
-    lat: float = Field(ge=-90,le=90)
-    lng: float = Field(ge=-180,le=180)
+    lat: float | None = Field(default=None,ge=-90,le=90)
+    lng: float | None = Field(default=None,ge=-180,le=180)
     coupon: str = Field(default='',max_length=30)
     version: int
 
@@ -43,6 +39,10 @@ class StartPayment(Strict):
     method: Literal['UPI','Card']
     idempotency_key: str = Field(min_length=8,max_length=80)
     cart_version: int
+    redeem_points: int = Field(default=0,ge=0,le=100000)
+    name: str = Field(min_length=2,max_length=80)
+    phone: str = Field(pattern=r'^[6-9][0-9]{9}$')
+    marketing_consent: bool = False
 
 class ConfirmPayment(Strict):
     outcome: Literal['success','failed','cancelled']
@@ -50,6 +50,7 @@ class ConfirmPayment(Strict):
 class Transition(Strict):
     status: Literal['preparing','ready','handed_off','cancelled']
     version: int
+    reason: str = Field(default='',max_length=300)
 
 class OverrideInput(Strict):
     minutes_from_now: int = Field(ge=1,le=180)
@@ -78,6 +79,12 @@ class ItemInput(Strict):
     prep_minutes: int = Field(ge=1,le=180)
     active: bool = True
     version: int = 1
+    @model_validator(mode='after')
+    def serving_window(self):
+        if self.start_hour == self.end_hour:
+            raise ValueError('Choose distinct serving hours. Use 0 to 24 for all day.')
+        return self
+
     @field_validator('city_prices')
     @classmethod
     def cities_valid(cls,v):

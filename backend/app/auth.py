@@ -8,6 +8,12 @@ from .models import User, Session, now
 
 hasher = PasswordHasher()
 COOKIE = 'orderdesk_session'
+STAFF_COOKIE = 'orderdesk_staff'
+
+
+def session_cookie(request):
+    scope = request.headers.get('X-OrderDesk-Experience') or request.query_params.get('scope')
+    return STAFF_COOKIE if scope == 'staff' else COOKIE
 
 def token_hash(token: str):
     return hashlib.sha256(token.encode()).hexdigest()
@@ -16,10 +22,10 @@ def create_session(db, user, response: Response):
     token = secrets.token_urlsafe(32)
     db.add(Session(token_hash=token_hash(token), user_id=user.id, expires_at=now()+timedelta(hours=12)))
     db.commit()
-    response.set_cookie(COOKIE, token, httponly=True, secure=os.getenv('COOKIE_SECURE') == 'true', samesite='lax', max_age=43200, path='/')
+    response.set_cookie(COOKIE if user.role == 'customer' else STAFF_COOKIE, token, httponly=True, secure=os.getenv('COOKIE_SECURE') == 'true', samesite='lax', max_age=43200, path='/')
 
 def current_user(request: Request, db: DBSession = Depends(get_db)):
-    token = request.cookies.get(COOKIE, '')
+    token = request.cookies.get(session_cookie(request), '')
     session = db.get(Session, token_hash(token))
     if not session or session.expires_at <= now():
         raise HTTPException(401, 'Please sign in to continue.')
@@ -31,12 +37,16 @@ def customer(user: User = Depends(current_user)):
     return user
 
 def admin(user: User = Depends(current_user)):
-    if user.role != 'admin':
+    if not central_manager(user):
         raise HTTPException(403, 'Central menu permission is required.')
     return user
 
+def central_manager(user):
+    return user.role == 'manager' and user.can_manage
+
+
 def staff_outlet(user, outlet_id):
-    if user.role != 'admin' and not (user.role == 'kitchen' and user.outlet_id == outlet_id):
+    if not central_manager(user) and not (user.role in ('manager', 'kitchen') and user.outlet_id == outlet_id):
         raise HTTPException(403, 'You do not have access to this kitchen.')
 
 def user_json(user):

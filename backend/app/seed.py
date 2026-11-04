@@ -8,6 +8,7 @@ from .models import *
 from .auth import hasher
 from .prediction import train_if_missing
 from .pricing import gst_inclusive
+from .orders import next_number
 
 IMAGE_PATHS=['/food/chicken.webp','/food/vegetable.webp','/food/mutton.webp','/food/haleem.webp','/food/salan.webp','/food/meetha.webp']
 OUTLETS=[
@@ -64,8 +65,9 @@ def seed(db):
     password=os.environ.get('DEMO_PASSWORD')
     if not password:
         raise RuntimeError('Set DEMO_PASSWORD for synthetic demo accounts.')
-    accounts=[('customer@orderdesk.demo','Demo customer','customer',None,False),('admin@orderdesk.demo','Central menu editor','admin',None,True)]
-    accounts += [(f'kitchen.{id}@orderdesk.demo',f'{name} kitchen','kitchen',id,id in ('kondapur','kukatpally','gachibowli')) for id,name,*_ in OUTLETS]
+    accounts=[('customer@orderdesk.demo','Demo customer','customer',None,False),('admin@orderdesk.demo','Central manager','manager',None,True)]
+    accounts += [(f'kitchen.{id}@orderdesk.demo',f'{name} kitchen','kitchen',id,False) for id,name,*_ in OUTLETS]
+    accounts += [(f'manager.{id}@orderdesk.demo',f'{name} manager','manager',id,False) for id,name,*_ in OUTLETS]
     for email,name,role,outlet_id,manager in accounts:
         user=db.scalar(select(User).where(User.email==email))
         if not user:
@@ -83,21 +85,25 @@ def seed(db):
       ('WEB-778146','kukatpally','UPI','20:26','21:16','preparing',105000,[('haleem','Mutton haleem',3,35000,'Regular')]),
     ]
     for id,outlet,method,placed,promised,status,total,lines in samples:
-        if db.get(Order,id):
+        if db.scalar(select(Order.id).where(Order.public_ref==id)):
             continue
         payment=Payment(user_id=customer.id,idempotency_key='seed-'+id,method=method,status='success',amount_paise=total,cart_version=0,snapshot={'source':'client snapshot'},created_at=at(placed))
         db.add(payment); db.flush()
-        order=Order(id=id,user_id=customer.id,outlet_id=outlet,payment_id=payment.id,status=status,subtotal_paise=total,total_paise=total,gst_paise=gst_inclusive(total),address='Synthetic sample delivery address',placed_at=at(placed),promised_at=at(promised),snapshot=True,snapshot_observed_at=at('21:20'))
+        service_date, daily_number = next_number(db, outlet, at(placed))
+        order=Order(public_ref=id,service_date=service_date,daily_number=daily_number,user_id=customer.id,outlet_id=outlet,payment_id=payment.id,status=status,subtotal_paise=total,total_paise=total,gst_paise=gst_inclusive(total),address='Synthetic sample delivery address',placed_at=at(placed),promised_at=at(promised),snapshot=True,snapshot_observed_at=at('21:20'))
         db.add(order); db.flush()
         for item,name,qty,unit,portion in lines:
-            db.add(OrderItem(order_id=id,item_id=item,name=name,quantity=qty,unit_paise=unit,choices={'portion':portion,'addons':[]}))
+            db.add(OrderItem(order_id=order.id,item_id=item,name=name,quantity=qty,unit_paise=unit,choices={'portion':portion,'addons':[]}))
         duration=int((at(promised)-at(placed)).total_seconds()/60)
-        db.add(Estimate(order_id=id,predicted_minutes=duration,minimum_minutes=db.get(Outlet,outlet).minimum_minutes,promised_minutes=duration,source='client-snapshot-not-a-model-prediction',features={}))
-        db.add(Event(kind='snapshot',order_id=id,user_id=customer.id,outlet_id=outlet,payload={'status':status,'observation':'2026-11-02 21:20 Asia/Kolkata','source':'Client snapshot; synthetic reference date'},created_at=at(placed)))
+        db.add(Estimate(order_id=order.id,predicted_minutes=duration,minimum_minutes=db.get(Outlet,outlet).minimum_minutes,promised_minutes=duration,source='client-snapshot-not-a-model-prediction',features={}))
+        db.execute(text('SELECT pg_advisory_xact_lock(70412026)'))
+        db.add(Event(kind='snapshot',order_id=order.id,user_id=customer.id,outlet_id=outlet,payload={'status':status,'observation':'2026-11-02 21:20 Asia/Kolkata','source':'Client snapshot; synthetic reference date'},created_at=at(placed)))
     train_if_missing(db)
     db.commit()
 
 if __name__=='__main__':
+    if os.getenv('DEMO_MODE') != 'true':
+        raise SystemExit('Demo seed requires DEMO_MODE=true.')
     with SessionLocal() as db:
         seed(db)
         print('Insert-only seed complete: 17 outlets, menu, demo accounts, 3 client snapshots and synthetic training records.')
