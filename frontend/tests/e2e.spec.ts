@@ -15,3 +15,66 @@ test('manager order cards support preparation, cancellation and history',async({
 test('immersive menu is photo-only with details and QR to customer home',async({page,context})=>{await login(context,'manager.kondapur@orderdesk.demo');await page.goto(ops+'/display');await expect(page.locator('.immersive-details h1')).toBeVisible();await expect(page.locator('.immersive-price>b')).toContainText('₹');await expect(page.locator('.immersive-qr')).toHaveAttribute('href','http://localhost:3000/');await expect(page.locator('.immersive-display button,[role="progressbar"],.display-controls,.display-progress,.topbar')).toHaveCount(0);const first=await page.locator('.immersive-details h1').innerText();await expect(page.locator('.immersive-details h1')).not.toHaveText(first,{timeout:10000});for(const width of [390,768,1440]){await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth&&document.documentElement.scrollHeight<=innerHeight)).toBeTruthy();}const destination=(await page.locator('.immersive-qr').getAttribute('href'))!;await page.goto(destination);await expect(page.locator('.food-card')).toHaveCount(6);expect((await page.request.get('/menu')).status()).toBe(404);});
 
 test('returning mobile retrieves previous orders in a fresh browser session',async({browser})=>{const original=await browser.newContext();let returning;try{const order=await purchase(original);await original.close();returning=await browser.newContext({viewport:{width:390,height:844}});const page=await returning.newPage();await page.goto('/orders');await page.getByLabel('Mobile number',{exact:true}).fill('6000000008');await page.getByRole('button',{name:'Continue',exact:true}).click();await expect(page.locator('.order-row').filter({hasText:order.id})).toBeVisible();await expect(page.locator('.orders-mobile-account')).toContainText('6000000008');await page.reload();await expect(page.locator('.order-row').filter({hasText:order.id})).toBeVisible();await page.getByRole('button',{name:'Change mobile number'}).click();await page.getByLabel('Mobile number',{exact:true}).fill('6999999999');await page.getByRole('button',{name:'Continue',exact:true}).click();await expect(page.getByRole('heading',{name:'Your first favourite is waiting.'})).toBeVisible();await expect(page.locator('.order-row').filter({hasText:order.id})).toHaveCount(0);}finally{await returning?.close();if(!returning)await original.close();}});
+
+
+test('party history and scheduled kitchen fulfilment are separate from delivery orders',async({page,context,browser})=>{
+ await context.request.post(api+'/auth/guest',{headers:customer});
+ await context.request.post(api+'/auth/contact',{headers:customer,data:{name:'Party Customer',phone:'6000000044'}});
+ const outlet=(await(await context.request.get(api+'/outlets')).json()).find((o:{id:string})=>o.id==='kondapur');
+ const created=await context.request.post(api+'/party',{headers:customer,data:{name:'Party Customer',phone:'6000000044',address:'Fictitious venue, Kondapur',lat:outlet.lat,lng:outlet.lng,scheduled_at:new Date(Date.now()+8*3600000).toISOString(),items:[{item_id:'chicken',quantity:24}],notes:'Six trays for the gathering'}});
+ expect(created.ok()).toBeTruthy();const party=await created.json();
+ const record=(await(await context.request.get(api+'/party/history',{headers:customer})).json()).find((p:{token:string})=>p.token===party.token);
+ await page.goto('/orders');await page.getByRole('button',{name:/Party orders/}).click();
+ const history=page.locator('.party-history-card[href="/party/'+party.token+'"]');await expect(history).toContainText('Awaiting confirmation');
+ const staffContext=await browser.newContext();try{
+  await login(staffContext,'manager.kondapur@orderdesk.demo');const manager=await staffContext.newPage();await manager.goto(ops+'/orders');
+  await manager.getByRole('button',{name:/Party requests/}).click();
+  const card=manager.locator('.party-desk-card[data-party-id="'+record.id+'"]');await expect(card).toContainText('×24');
+  await card.getByRole('button',{name:'Accept party order'}).click();
+  await expect(card).toHaveCount(0);await manager.getByRole('button',{name:'Confirmed & in progress',exact:true}).click();await expect(card).toContainText('Confirmed');
+  for(const width of [390,768,1440]){await manager.setViewportSize({width,height:950});expect(await manager.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();}
+  await manager.screenshot({path:'../artifacts/party-manager.png',fullPage:true});
+  await login(staffContext,'kitchen.kondapur@orderdesk.demo');await manager.goto(ops+'/kitchen');
+  const ticket=manager.locator('.kitchen-party-board .party-desk-card[data-party-id="'+record.id+'"]');
+  await expect(ticket).toContainText('Scheduled service');await expect(ticket).toContainText('×24');await expect(ticket.locator('.kds-adjust')).toHaveCount(0);
+  await manager.screenshot({path:'../artifacts/party-kitchen.png',fullPage:true});
+  await page.goto('/party/'+party.token);await ticket.getByRole('button',{name:'Start party preparation'}).click();await expect(page.getByRole('heading',{name:'Preparing your feast',exact:true})).toBeVisible();
+  await ticket.getByRole('button',{name:'Mark feast ready'}).click();await expect(page.getByRole('heading',{name:'Ready for collection',exact:true})).toBeVisible();
+  await ticket.getByRole('button',{name:'Confirm party handoff'}).click();await expect(ticket).toHaveCount(0);
+  await expect(page.getByRole('heading',{name:'Fulfilled',exact:true})).toBeVisible();
+  await page.goto('/orders');await page.getByRole('button',{name:/Party orders/}).click();await expect(history).toContainText('Fulfilled');
+  for(const width of [390,768,1440]){await page.setViewportSize({width,height:950});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();}
+  await page.screenshot({path:'../artifacts/party-history.png',fullPage:true});
+ }finally{await staffContext.close();}
+});
+
+test('all-outlet manager defaults to chain-wide data and can scope to a branch',async({page,context})=>{
+ const order=await purchase(context);await login(context,'manager.all@orderdesk.demo');await page.goto(ops+'/dashboard');
+ await expect(page.getByRole('heading',{name:'Dashboard · All outlets',exact:true})).toBeVisible();
+ await expect(page.locator('.outlet-summary-grid>div')).toHaveCount(17);
+ await page.goto(ops+'/orders');await expect(page.locator('[data-order-id="'+order.id+'"]')).toContainText('Kondapur');
+ await page.getByRole('button',{name:'Outlet scope',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'Kukatpally',exact:true}).click();
+ await expect(page.locator('.orders-heading .eyebrow')).toContainText('KUKATPALLY');await expect(page.locator('[data-order-id="'+order.id+'"]')).toHaveCount(0);
+ await page.getByRole('button',{name:'Outlet scope',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'All outlets',exact:true}).click();await expect(page.locator('[data-order-id="'+order.id+'"]')).toBeVisible();
+ for(const width of [390,768,1440]){await page.setViewportSize({width,height:950});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();}
+ await page.screenshot({path:'../artifacts/all-outlet-orders.png',fullPage:true});
+});
+
+
+test('menu display enters fullscreen from navigation and Escape returns to dashboard',async({page,context})=>{
+ await login(context,'manager.kondapur@orderdesk.demo');await page.goto(ops+'/dashboard');
+ await page.getByRole('link',{name:'Menu display',exact:true}).click();await expect(page.locator('.immersive-display')).toBeVisible();
+ await expect.poll(()=>page.evaluate(()=>!!document.fullscreenElement)).toBeTruthy();
+ await page.evaluate(()=>document.exitFullscreen());await expect(page).toHaveURL(ops+'/dashboard');
+ await page.goto(ops+'/display');await expect(page.locator('.immersive-display')).toBeVisible();await page.keyboard.press('Escape');await expect(page).toHaveURL(ops+'/dashboard');
+ await page.goto(ops+'/display');await expect(page.locator('.immersive-display')).toBeVisible();await page.locator('.immersive-details h1').click();await expect.poll(()=>page.evaluate(()=>!!document.fullscreenElement)).toBeTruthy();await page.evaluate(()=>document.exitFullscreen());await expect(page).toHaveURL(ops+'/dashboard');
+});
+
+
+test('kitchen keeps the reserved section hidden until a confirmed party exists',async({page,context})=>{
+ await login(context,'kitchen.kondapur@orderdesk.demo');
+ await page.route('**/api/staff/party**',route=>route.fulfill({json:[]}));
+ await page.goto(ops+'/kitchen');await expect(page.locator('.kds-header')).toBeVisible();
+ await expect(page.locator('.kitchen-party-board')).toHaveCount(0);
+ await expect(page.getByText('RESERVED FOR LATER',{exact:true})).toHaveCount(0);
+});

@@ -6,13 +6,13 @@ import {useEffect, useState} from 'react';
 import {useRouter} from 'next/navigation';
 import {ArrowRight, Check, Clock, CalendarDays, MapPin, Minus, Plus} from 'lucide-react';
 import {api, useLive, useResource} from '@/lib/api';
-import {Menu, Outlet} from '@/lib/types';
-import {PartyRecord, partyDate} from '@/lib/party';
+import {Menu, Outlet, User} from '@/lib/types';
+import {PartyRecord, partyDate, partyStatus} from '@/lib/party';
 import {Licence,ErrorBox, FoodMark, Loading} from '@/components/ui';
 import Location from './Location';
 
-export default function Party({token, outlets}: {token:string;outlets:Outlet[]}) {
-  return token ? <PartyTracking token={token}/> : <PartyForm outlets={outlets}/>;
+export default function Party({token, outlets, onIdentity}: {token:string;outlets:Outlet[];onIdentity:(user:User)=>void}) {
+  return token ? <PartyTracking token={token}/> : <PartyForm outlets={outlets} onIdentity={onIdentity}/>;
 }
 
 function PartyTracking({token}: {token:string}) {
@@ -25,9 +25,9 @@ function PartyTracking({token}: {token:string}) {
     {request.loading && !party && <Loading/>}
     {party && <>
       <header className={'party-receipt-heading '+party.status}>
-        <span className="receipt-icon">{party.status==='accepted'?<Check size={30}/>:<Clock size={30}/>}</span>
-        <div><span className="eyebrow">YOUR FEAST, IN THE MAKING</span><h1>{party.status==='pending'?'Request received':party.status==='accepted'?'Your party is confirmed':'Unable to confirm this request'}</h1>
-        <p>{party.status==='pending'?'The catering manager is checking availability. This page updates automatically.':party.status==='accepted'?'The kitchen has reserved your feast. We look forward to serving you.':'Please try another date or contact the outlet.'}</p></div>
+        <span className="receipt-icon">{!['pending','rejected'].includes(party.status)?<Check size={30}/>:<Clock size={30}/>}</span>
+        <div><span className="eyebrow">YOUR FEAST, IN THE MAKING</span><h1>{party.status==='pending'?'Request received':party.status==='rejected'?'Unable to confirm this request':partyStatus(party.status)}</h1>
+        <p>{party.status==='pending'?'The catering manager is checking availability. This page updates automatically.':party.status==='rejected'?'Please try another date or contact the outlet.':'Your scheduled feast is being handled by the catering kitchen.'}</p></div>
       </header>
       <div className="party-receipt-grid"><section className="paper">
         <h2>Your feast</h2>{party.items.map(line=>{const dish=menu.data?.items.find(item=>item.id===line.item_id);return <div className="receipt-dish" key={line.item_id}>
@@ -35,7 +35,7 @@ function PartyTracking({token}: {token:string}) {
           <div><strong>{dish&&<FoodMark veg={dish.vegetarian}/>} {line.name}</strong><small>{dish?.allergens.length?'Allergens · '+dish.allergens.join(', '):'Ask the kitchen about allergens'}</small></div><b>×{line.quantity}</b>
         </div>;})}
       </section><aside className="paper receipt-details"><span className="eyebrow">THE PLAN</span><h2><CalendarDays size={20}/> {partyDate(party.scheduled_at)}</h2><p><MapPin size={18}/> {party.outlet_name}</p>
-        <div className="receipt-steps"><span className="done">1 · Request sent</span><span className={party.status==='accepted'?'done':''}>2 · Kitchen confirmation</span><span>3 · Feast preparation</span></div>
+        <div className="receipt-steps"><span className="done">1 · Request sent</span><span className={!['pending','rejected'].includes(party.status)?'done':''}>2 · Kitchen confirmation</span><span className={['preparing','ready','fulfilled'].includes(party.status)?'done':''}>3 · {['preparing','ready','fulfilled'].includes(party.status)?partyStatus(party.status):'Feast preparation'}</span></div>
         {party.reason&&<p className="warning">{party.reason}</p>}<p>No payment collected. The manager will confirm your final quote.</p><small>Prices include 5% GST.<br/><Licence number={party.fssai}/></small>
         <Link className="secondary full" href="/">Explore the menu <ArrowRight size={17}/></Link>
       </aside></div>
@@ -43,9 +43,10 @@ function PartyTracking({token}: {token:string}) {
   </main>;
 }
 
-function PartyForm({outlets}: {outlets:Outlet[]}) {
+function PartyForm({outlets,onIdentity}: {outlets:Outlet[];onIdentity:(user:User)=>void}) {
   const router = useRouter();
   const menu = useResource<Menu>('/menu');
+  const profile=useResource<{name:string;phone:string}>('/auth/profile');
   const policy = useResource<{notice_hours:number}>('/party/policy');
   const [location, showLocation] = useState(false);
   const [destination, setDestination] = useState<{lat:number;lng:number;address:string}|null>(null);
@@ -81,6 +82,9 @@ function PartyForm({outlets}: {outlets:Outlet[]}) {
       setBusy(true);
       setError('');
       try {
+        const identity=await api<User>('/auth/guest','POST');
+        onIdentity(identity);
+        await api('/auth/contact','POST',{name:fields.get('name'),phone:fields.get('phone')});
         const result = await api<{token:string}>('/party','POST',{
           ...destination, name:fields.get('name'), phone:fields.get('phone'), notes:fields.get('notes'),
           scheduled_at:String(fields.get('date'))+':00+05:30',items,
@@ -121,8 +125,8 @@ function PartyForm({outlets}: {outlets:Outlet[]}) {
       <h2>Delivery details</h2>
       <p className="muted" role="status">{quantity} {quantity===1 ? 'item' : 'items'} selected</p>
       <div className="form-grid">
-        <label>Your name<input name="name" required minLength={2} maxLength={80} autoComplete="name"/></label>
-        <label>Indian mobile number<input name="phone" required type="tel" pattern="[6-9][0-9]{9}" maxLength={10} autoComplete="tel-national"/></label>
+        <label>Your name<input name="name" defaultValue={profile.data?.name||''} required minLength={2} maxLength={80} autoComplete="name"/></label>
+        <label>Indian mobile number<input name="phone" defaultValue={profile.data?.phone||''} required type="tel" pattern="[6-9][0-9]{9}" maxLength={10} autoComplete="tel-national"/></label>
       </div>
       <label><CalendarDays size={16}/> Requested date and time (IST)
         <input type="datetime-local" name="date" min={earliest} required/>

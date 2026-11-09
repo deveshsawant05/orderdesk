@@ -1,11 +1,25 @@
 'use client';
 import Image from 'next/image';
 import {useEffect,useState} from 'react';
+import {useRouter} from 'next/navigation';
 import {money,useResource} from '@/lib/api';
 import {Menu,Outlet} from '@/lib/types';
 import {ErrorBox,FoodMark,Licence,Loading} from '@/components/ui';
 
 export default function MenuDisplay({outlet,revision,menuCode}:{outlet:Outlet;revision:number;menuCode?:{url:string;image:string}}){
+ const router=useRouter();
+ useEffect(()=>{
+  let entered=!!document.fullscreenElement;
+  const enter=()=>{if(!document.fullscreenElement)void document.documentElement.requestFullscreen?.().catch(()=>{});};
+  const changed=()=>{if(document.fullscreenElement)entered=true;else if(entered)router.replace('/dashboard');};
+  const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){if(document.fullscreenElement)void document.exitFullscreen().catch(()=>{});router.replace('/dashboard');}};
+  const tap=(event:PointerEvent)=>{if(!(event.target instanceof Element)||!event.target.closest('a,button'))enter();};
+  document.addEventListener('fullscreenchange',changed);
+  document.addEventListener('keydown',key);
+  document.addEventListener('pointerdown',tap);
+  if(navigator.userActivation?.isActive)enter();
+  return()=>{document.removeEventListener('fullscreenchange',changed);document.removeEventListener('keydown',key);document.removeEventListener('pointerdown',tap);};
+ },[router]);
  const menu=useResource<Menu>('/menu?outlet_id='+outlet.id,revision);
  const [position,setPosition]=useState(0);
  const items=menu.data?.items??[],size=items.length,index=size?position%size:0,item=items[index];

@@ -239,3 +239,70 @@ def test_production_mobile_history_requires_verified_session(client, db, monkeyp
     assert client.post('/auth/contact',json={'phone':'6000000001'}).status_code==200
     assert client.get('/orders').json()==[]
     assert client.get('/orders/'+first['order']['id']).status_code==404
+
+
+def test_party_history_follows_session_phone_and_has_own_fulfilment(client, db, monkeypatch):
+    monkeypatch.setenv('MOBILE_LOGIN_SKIP_OTP', 'true')
+    outlet = db.get(Outlet, 'kondapur')
+    signin(client)
+    client.post('/auth/contact', json=CONTACT)
+    request = {**CONTACT, 'address':'Fictitious party venue', 'lat':outlet.lat, 'lng':outlet.lng,
+               'scheduled_at':(now()+timedelta(hours=8)).isoformat(),
+               'items':[{'item_id':'chicken','quantity':24}], 'notes':'Pack in six trays'}
+    response = client.post('/party', json=request)
+    assert response.status_code == 200, response.text
+    token = response.json()['token']
+    entry = client.get('/party/history').json()[0]
+    assert entry['token'] == token and entry['status'] == 'pending'
+    assert client.get('/orders').json() == []  # Catering never becomes an immediate delivery ticket.
+    client.cookies.clear()
+    signin(client)
+    client.post('/auth/mobile', json={'phone':'6000000099'})
+    assert client.get('/party/history').json() == []
+    client.post('/auth/mobile', json={'phone':CONTACT['phone']})
+    assert client.get('/party/history').json()[0]['token'] == token
+    monkeypatch.setenv('MOBILE_LOGIN_SKIP_OTP', 'false')
+    assert client.get('/party/history').json() == []  # A new unverified session cannot claim it.
+
+    signin(client, 'kitchen', 'kondapur')
+    assert client.post('/staff/party/'+entry['id'], json={'status':'accepted'}).status_code == 403
+    signin(client, 'manager', 'kondapur')
+    assert client.post('/staff/party/'+entry['id'], json={'status':'accepted'}).status_code == 200
+    signin(client, 'kitchen', 'kukatpally')
+    assert client.post('/staff/party/'+entry['id'], json={'status':'preparing'}).status_code == 403
+    signin(client, 'kitchen', 'kondapur')
+    queued = client.get('/staff/party').json()
+    assert queued[0]['notes'] == 'Pack in six trays'
+    for state in ['preparing','ready','fulfilled']:
+        assert client.post('/staff/party/'+entry['id'], json={'status':state}).status_code == 200
+        assert client.post('/staff/party/'+entry['id'], json={'status':state}).status_code == 409
+    assert client.get('/staff/party').json() == []
+    assert client.get('/party/tracking/'+token).json()['status'] == 'fulfilled'
+
+
+def test_central_manager_aggregates_all_outlets_and_branch_scope_stays_private(client, db):
+    signin(client)
+    for outlet_id in ['kondapur', 'kukatpally']:
+        cart = fill_cart(client, outlet_id=outlet_id)
+        pay(client, cart, 'scope-'+outlet_id)
+    outlet = db.get(Outlet, 'kukatpally')
+    response=client.post('/party',json={**CONTACT,'address':'Fictitious venue', 'lat':outlet.lat,'lng':outlet.lng,
+        'scheduled_at':(now()+timedelta(hours=9)).isoformat(),'items':[{'item_id':'chicken','quantity':15}]})
+    assert response.status_code == 200
+    signin(client,'manager')
+    assert {o['outlet_id'] for o in client.get('/orders?queue=true').json()} == {'kondapur','kukatpally'}
+    report = client.get('/staff/report').json()
+    assert report['orders'] == 2 and report['active'] == 2 and report['party']['pending'] == 1
+    assert sum(o['orders'] for o in report['outlets']) == 2
+    scoped = client.get('/staff/report?outlet_id=kondapur').json()
+    assert scoped['orders'] == 1 and scoped['party'] == {}
+    assert client.get('/staff/party').json()[0]['outlet_id'] == 'kukatpally'
+    signin(client, 'manager', 'kondapur')
+    assert {o['outlet_id'] for o in client.get('/orders?queue=true').json()} == {'kondapur'}
+    assert client.get('/staff/report').json()['orders'] == 1
+    assert client.get('/staff/party').json() == []
+    assert client.get('/orders?outlet_id=kukatpally').status_code == 403
+    assert client.get('/staff/report?outlet_id=kukatpally').status_code == 403
+    assert client.get('/staff/party?outlet_id=kukatpally').status_code == 403
+    signin(client)
+    assert client.get('/staff/party').status_code == 403

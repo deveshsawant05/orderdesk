@@ -2,18 +2,22 @@
 from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, extract, func, select
-from .auth import current_user, staff_outlet
+from .auth import current_user, staff_scope
 from .db import get_db
-from .models import Availability, MenuItem, Order, OrderItem, PartyRequest, Payment, now
+from .models import Availability, MenuItem, Order, OrderItem, PartyRequest, Payment, Outlet, now
 router = APIRouter()
 
 @router.get('/staff/report')
-def report(outlet_id:str, days:int=Query(default=7,ge=1,le=90),user=Depends(current_user),db=Depends(get_db)):
+def report(outlet_id:str|None=None, days:int=Query(default=7,ge=1,le=90),user=Depends(current_user),db=Depends(get_db)):
     if user.role != 'manager':
         raise HTTPException(403,'Manager access is required.')
-    staff_outlet(user,outlet_id)
+    outlet_id=staff_scope(user,outlet_id)
+    outlet_scope=(Order.outlet_id==outlet_id,) if outlet_id else ()
+    party_scope=(PartyRequest.outlet_id==outlet_id,) if outlet_id else ()
+    stock_scope=(Availability.outlet_id==outlet_id,) if outlet_id else ()
+    outlet_names=dict(db.execute(select(Outlet.id,Outlet.name)).all())
     observed=now()
-    window=(Order.outlet_id==outlet_id,Order.snapshot.is_(False),Order.placed_at>=observed-timedelta(days=days),Order.placed_at<=observed)
+    window=(*outlet_scope,Order.snapshot.is_(False),Order.placed_at>=observed-timedelta(days=days),Order.placed_at<=observed)
     counts=dict(db.execute(select(Order.status,func.count()).where(*window).group_by(Order.status)).all())
     total=sum(counts.values())
     live=(Order.status.in_(['new','preparing','ready']),Order.placed_at>=observed-timedelta(hours=12))
@@ -41,13 +45,17 @@ def report(outlet_id:str, days:int=Query(default=7,ge=1,le=90),user=Depends(curr
     dishes=[{'name':name,'quantity':int(quantity),'food_value_paise':int(value)} for name,quantity,value in db.execute(select(OrderItem.name,func.sum(OrderItem.quantity),func.sum(OrderItem.unit_paise*OrderItem.quantity)).join(Order,Order.id==OrderItem.order_id).where(*window,Order.status!='cancelled').group_by(OrderItem.name).order_by(func.sum(OrderItem.quantity).desc(),OrderItem.name).limit(8)).all()]
     payments=[{'method':method,'orders':number,'amount_paise':int(amount)} for method,number,amount in db.execute(select(Payment.method,func.count(),func.sum(Order.total_paise)).join(Order,Order.payment_id==Payment.id).where(*window,Order.status!='cancelled').group_by(Payment.method).order_by(Payment.method)).all()]
     reasons=[{'reason':reason or 'Unspecified','orders':number} for reason,number in db.execute(select(Order.resolution_reason,func.count()).where(*window,Order.status=='cancelled').group_by(Order.resolution_reason).order_by(func.count().desc())).all()]
-    party_window=(PartyRequest.outlet_id==outlet_id,PartyRequest.created_at>=observed-timedelta(days=days),PartyRequest.created_at<=observed)
+    party_window=(*party_scope,PartyRequest.created_at>=observed-timedelta(days=days),PartyRequest.created_at<=observed)
     parties=dict(db.execute(select(PartyRequest.status,func.count()).where(*party_window).group_by(PartyRequest.status)).all())
-    upcoming=[{'scheduled_at':p.scheduled_at,'items':sum(line['quantity'] for line in p.items),'status':p.status} for p in db.scalars(select(PartyRequest).where(PartyRequest.outlet_id==outlet_id,PartyRequest.scheduled_at>=observed,PartyRequest.status.in_(['pending','accepted'])).order_by(PartyRequest.scheduled_at).limit(5))]
-    unavailable=list(db.scalars(select(MenuItem.name).join(Availability,Availability.item_id==MenuItem.id).where(Availability.outlet_id==outlet_id,Availability.available.is_(False),MenuItem.active.is_(True)).order_by(MenuItem.name)))
-    recent=[{'id':o.public_ref,'number':o.daily_number,'status':o.status,'total_paise':o.total_paise,'placed_at':o.placed_at,'ready_at':o.revised_at or o.promised_at} for o in db.scalars(select(Order).where(*window).order_by(Order.placed_at.desc()).limit(10))]
+    upcoming=[{'outlet_name':outlet_names[p.outlet_id],'scheduled_at':p.scheduled_at,'items':sum(line['quantity'] for line in p.items),'status':p.status} for p in db.scalars(select(PartyRequest).where(*party_scope,PartyRequest.scheduled_at>=observed,PartyRequest.status.in_(['pending','accepted','preparing','ready'])).order_by(PartyRequest.scheduled_at).limit(5))]
+    unavailable=list(db.scalars(select(func.concat(Outlet.name, ' · ', MenuItem.name) if not outlet_id else MenuItem.name).select_from(MenuItem).join(Availability,Availability.item_id==MenuItem.id).join(Outlet,Outlet.id==Availability.outlet_id).where(*stock_scope,Availability.available.is_(False),MenuItem.active.is_(True)).order_by(MenuItem.name)))
+    recent=[{'outlet_name':outlet_names[o.outlet_id],'id':o.public_ref,'number':o.daily_number,'status':o.status,'total_paise':o.total_paise,'placed_at':o.placed_at,'ready_at':o.revised_at or o.promised_at} for o in db.scalars(select(Order).where(*window).order_by(Order.placed_at.desc()).limit(10))]
+    by_outlet=[{'outlet_id':oid,'outlet_name':outlet_names[oid],'orders':count,'net_paise':int(value)} for oid,count,value in db.execute(select(Order.outlet_id,func.count(),func.sum(case((Order.status!='cancelled',Order.total_paise),else_=0))).where(*window).group_by(Order.outlet_id)).all()]
+    existing={row['outlet_id'] for row in by_outlet}
+    by_outlet += [{'outlet_id':oid,'outlet_name':name,'orders':0,'net_paise':0} for oid,name in outlet_names.items() if oid not in existing and (not outlet_id or oid==outlet_id)]
+    by_outlet.sort(key=lambda row: row['outlet_name'])
     rounded=lambda value:round(float(value),1) if value is not None else None
-    return {'days':days,'as_of':observed,'orders':total,'cancelled':counts.get('cancelled',0),'statuses':counts,'active':active,'overdue':overdue,
+    return {'outlet_id':outlet_id,'outlets':by_outlet,'days':days,'as_of':observed,'orders':total,'cancelled':counts.get('cancelled',0),'statuses':counts,'active':active,'overdue':overdue,
         'median_prep_minutes':rounded(performance[2]),'average_prep_minutes':rounded(performance[1]),'p90_prep_minutes':rounded(performance[3]),'timed_orders':performance[0],
         'on_time_percent':round(100*(performance[4] or 0)/performance[0],1) if performance[0] else None,
         'repeat_verified_customers':db.scalar(select(func.count()).select_from(verified.subquery())),

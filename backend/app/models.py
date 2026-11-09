@@ -266,6 +266,7 @@ class PartyRequest(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     token: Mapped[str] = mapped_column(String(64), default=lambda: token_urlsafe(32), unique=True)
     outlet_id: Mapped[str] = mapped_column(ForeignKey('outlets.id'), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), index=True)
     name: Mapped[str] = mapped_column(String(80))
     phone: Mapped[str] = mapped_column(String(10))
     address: Mapped[str] = mapped_column(String(300))
@@ -275,4 +276,4 @@ class PartyRequest(Base):
     status: Mapped[str] = mapped_column(String(20), default='pending')
     reason: Mapped[str | None] = mapped_column(String(300))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    __table_args__ = (CheckConstraint("status IN ('pending','accepted','rejected')"),)
+    __table_args__ = (CheckConstraint("status IN ('pending','accepted','rejected','preparing','ready','fulfilled')", name='ck_party_status'),)

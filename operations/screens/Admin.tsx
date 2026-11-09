@@ -6,7 +6,7 @@ import {Check,Edit3,Plus,Search,Trash2} from 'lucide-react';
 import {api,money,useResource} from '@/lib/api';
 import {Item,Menu,Option,Outlet,User} from '@/lib/types';
 import {ErrorBox,FoodMark,Loading,Modal} from '@/components/ui';
-export default function Admin({user,outlets,outlet,selectOutlet,revision}:{user:User;outlets:Outlet[];outlet:Outlet;selectOutlet:(s:string)=>void;revision:number}){
+export default function Admin({user,outlet,revision}:{user:User;outlets:Outlet[];outlet:Outlet;selectOutlet:(s:string)=>void;revision:number}){
   const items=useResource<Item[]>(user.role==='manager'?'/admin/menu?outlet_id='+outlet.id:null,revision),menu=useResource<Menu>(user.role==='manager'?'/menu?outlet_id='+outlet.id:null,revision);
   const [edit,setEdit]=useState<Item|null>(null),[creating,setCreating]=useState(false),[error,setError]=useState(''),[search,setSearch]=useState(''),[saved,setSaved]=useState(''),[busy,setBusy]=useState('');
   if(user.role!=='manager')return <main className="empty"><h2>Central menu access is restricted.</h2><p>Sign in with an authorized central menu account.</p></main>;

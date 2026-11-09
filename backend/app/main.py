@@ -19,6 +19,7 @@ from .road_routing import road_route
 from .prediction import predict
 from .orders import customer_order_scope, accessible_order, estimated_arrival, order_json, orders_json, tracking_order, next_number, NEXT
 from .events import emit, notify, escalate_late
+from .auth import staff_scope
 from .party import router as party_router, find_party
 from .places import router as places_router
 from .reporting import router as reporting_router
@@ -354,11 +355,9 @@ def orders(request:Request,outlet_id:str|None=None,snapshots:bool=False,queue:bo
     if user.role=='customer':
         query=query.where(customer_order_scope(user,customer_history_phone(db,request,user)))
     else:
-        outlet_id=outlet_id or user.outlet_id
-        if not outlet_id:
-            raise HTTPException(422,'Select an outlet.')
-        staff_outlet(user,outlet_id)
-        query=query.where(Order.outlet_id==outlet_id)
+        outlet_id=staff_scope(user,outlet_id)
+        if outlet_id:
+            query=query.where(Order.outlet_id==outlet_id)
         if queue:
             query=query.where(Order.status.in_(['new','preparing','ready']),Order.placed_at>=now()-timedelta(hours=12))
         elif history:

@@ -15,14 +15,14 @@ const actions:Record<string,{status:string;label:string}>={new:{status:'preparin
 const due=(o:Order)=>Date.parse(o.revised_at||o.promised_at);
 const reasons=['Item unavailable','Kitchen capacity','Customer requested cancellation'];
 
-export default function ControlRoom({outlet,revision}:{user:User;outlets:Outlet[];outlet:Outlet;selectOutlet:(id:string)=>void;revision:number}){
+export default function ControlRoom({outlet,revision}:{user:User;outlets:Outlet[];outlet:Outlet|null;selectOutlet:(id:string)=>void;revision:number}){
  const [view,setView]=useState<'live'|'history'|'party'>('live');
  const [filter,setFilter]=useState('all'),[query,setQuery]=useState('');
  const [selected,setSelected]=useState<Order|null>(null),[busy,setBusy]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState('');
  const [now,setNow]=useState(Date.now);
- const current=useResource<Order[]>('/orders?outlet_id='+outlet.id+'&queue=true',revision);
- const archive=useResource<Order[]>(view==='history'?'/orders?outlet_id='+outlet.id+'&history=true':null,revision);
- const parties=useResource<PartyRecord[]>('/staff/party?outlet_id='+outlet.id,revision);
+ const current=useResource<Order[]>('/orders?queue=true'+(outlet?'&outlet_id='+outlet.id:''),revision);
+ const archive=useResource<Order[]>(view==='history'?'/orders?history=true'+(outlet?'&outlet_id='+outlet.id:''):null,revision);
+ const parties=useResource<PartyRecord[]>('/staff/party'+(outlet?'?outlet_id='+outlet.id:''),revision);
  useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),15000);return()=>clearInterval(timer);},[]);
  const orders=(current.data??[]).filter(o=>activeStages.includes(o.status));
  const overdue=orders.filter(o=>o.status!=='ready'&&due(o)<now).length;
@@ -38,10 +38,10 @@ export default function ControlRoom({outlet,revision}:{user:User;outlets:Outlet[
  };
  const nextDue=[...orders].filter(o=>o.status!=='ready').sort((a,b)=>due(a)-due(b)).slice(0,3);
  return <main className="orders-workspace">
-  <header className="orders-heading"><div><span className="eyebrow">{outlet.name.toUpperCase()} / ORDER DESK</span><h1>Orders <span>{orders.length} live</span></h1></div><div className="orders-heading-actions"><button className="secondary" aria-label="Refresh orders" onClick={()=>void reload()}><RefreshCw size={17}/></button><Link href="/kitchen" className="primary" onClick={()=>{void document.documentElement.requestFullscreen?.().catch(()=>{});}}><UtensilsCrossed size={17}/> Kitchen board <ArrowRight size={16}/></Link></div></header>
+  <header className="orders-heading"><div><span className="eyebrow">{(outlet?.name||'All outlets').toUpperCase()} / ORDER DESK</span><h1>Orders <span>{orders.length} live</span></h1></div><div className="orders-heading-actions"><button className="secondary" aria-label="Refresh orders" onClick={()=>void reload()}><RefreshCw size={17}/></button><Link href="/kitchen" className="primary" onClick={()=>{void document.documentElement.requestFullscreen?.().catch(()=>{});}}><UtensilsCrossed size={17}/> Kitchen board <ArrowRight size={16}/></Link></div></header>
   <nav className="orders-views" aria-label="Order desk views">{([{id:'live',name:'Live orders',count:orders.length},{id:'party',name:'Party requests',count:pending},{id:'history',name:'Order history'}] as const).map(tab=><button key={tab.id} className={view===tab.id?'selected':''} aria-pressed={view===tab.id} onClick={()=>{setView(tab.id);setQuery('');}}>{tab.name}{'count' in tab&&<b>{tab.count}</b>}</button>)}</nav>
   <ErrorBox message={error||current.error||archive.error||parties.error} retry={()=>void reload()}/>{notice&&<div className="orders-notice" role="status">{notice}<button aria-label="Dismiss update" onClick={()=>setNotice('')}><X size={15}/></button></div>}
-  {view==='party'?<div className="orders-party-view"><PartyDesk outletId={outlet.id} revision={revision}/></div>:<div className={'orders-workspace-grid'+(view==='history'?' history':'')}>
+  {view==='party'?<div className="orders-party-view"><PartyDesk outletId={outlet?.id??null} revision={revision}/></div>:<div className={'orders-workspace-grid'+(view==='history'?' history':'')}>
    <section className="orders-primary" aria-label={view==='history'?'Order history':'Live order grid'}>
     <div className="orders-filterbar">{view==='live'?<div className="orders-filters" role="group" aria-label="Filter live orders">{[{id:'all',name:'All',count:orders.length},...activeStages.map(id=>({id,name:id==='new'?'Incoming':id==='ready'?'Ready':statusName(id),count:orders.filter(o=>o.status===id).length})),{id:'late',name:'Overdue',count:overdue}].map(f=><button key={f.id} className={filter===f.id?'selected '+f.id:f.id} aria-pressed={filter===f.id} onClick={()=>setFilter(f.id)}>{f.name}<b>{f.count}</b></button>)}</div>:<span className="orders-history-caption">Recent fulfilled, cancelled and previous-shift orders</span>}<label className="orders-search"><Search size={16}/><input aria-label="Find an order" placeholder="Order number or dish" value={query} onChange={e=>setQuery(e.target.value)}/></label></div>
     {(view==='live'?current.loading&&!current.data:archive.loading&&!archive.data)?<Loading/>:entries.length?<div className="order-ticket-grid">{entries.map(o=>{
@@ -49,7 +49,7 @@ export default function ControlRoom({outlet,revision}:{user:User;outlets:Outlet[
      const remaining=Math.max(0,Math.ceil((due(o)-now)/60000));
      return <article className={'manager-ticket '+o.status+(late?' is-late':'')} key={o.id} data-order-id={o.id}>
       <header><button onClick={()=>setSelected(o)} aria-label={'View order '+o.id}><strong>#{String(o.daily_number).padStart(3,'0')}</strong></button><span className={'status-pill '+o.status}>{statusName(o.status)}</span></header>
-      <div className="manager-ticket-timing"><span><Clock size={14}/>{activeStages.includes(o.status)?o.status==='ready'?'Awaiting pickup':late?Math.max(1,Math.floor((now-due(o))/60000))+' min overdue':remaining+' min to ready':clock(o.placed_at)+' IST'}</span><small>{o.payment_method}</small></div>
+      {!outlet&&<span className="ticket-outlet">{o.outlet_name}</span>}<div className="manager-ticket-timing"><span><Clock size={14}/>{activeStages.includes(o.status)?o.status==='ready'?'Awaiting pickup':late?Math.max(1,Math.floor((now-due(o))/60000))+' min overdue':remaining+' min to ready':clock(o.placed_at)+' IST'}</span><small>{o.payment_method}</small></div>
       <div className="manager-ticket-items">{o.items.slice(0,2).map((line,i)=><div key={i}><b>{line.quantity}×</b><span>{line.name}<small>{line.choices.portion}</small></span></div>)}{o.items.length>2&&<small>+{o.items.length-2} more dishes</small>}</div>
       <div className="manager-ticket-summary"><span>Placed {clock(o.placed_at)}<small>Ready {clock(o.revised_at||o.promised_at)}</small></span><b>{money(o.total_paise)}</b></div>
       <footer>{actions[o.status]&&<button className={'ticket-quick-action '+o.status} disabled={!!busy} onClick={()=>void act(o,'status',{status:actions[o.status].status})}>{actions[o.status].label}<ArrowRight size={16}/></button>}<button className="ticket-details-button" onClick={()=>setSelected(o)}>View details</button></footer>

@@ -2,11 +2,11 @@
 from datetime import timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import AwareDatetime, Field
 from sqlalchemy import select
 
-from .auth import current_user, staff_outlet
+from .auth import current_user, staff_outlet, staff_scope, customer, customer_history_phone
 from .db import get_db
 from .events import emit
 from .models import DemoMessage, MenuItem, Outlet, PartyRequest, now
@@ -34,14 +34,14 @@ class PartyInput(Strict):
 
 
 class PartyDecision(Strict):
-    status: Literal['accepted', 'rejected']
+    status: Literal['accepted', 'rejected', 'preparing', 'ready', 'fulfilled']
     reason: str = Field(default='', max_length=300)
 
 
 def public_party(db, party):
     outlet = db.get(Outlet, party.outlet_id)
     return {
-        'outlet_name': outlet.name, 'status': party.status, 'reason': party.reason,
+        'outlet_id': outlet.id, 'outlet_name': outlet.name, 'created_at': party.created_at, 'status': party.status, 'reason': party.reason,
         'scheduled_at': party.scheduled_at, 'items': party.items, 'fssai': outlet.fssai,
     }
 
@@ -59,7 +59,15 @@ def policy():
 
 
 @router.post('/party')
-def submit(body: PartyInput, db=Depends(get_db)):
+def submit(body: PartyInput, request: Request, db=Depends(get_db)):
+    try:
+        owner = current_user(request, db)
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
+        owner = None
+    if owner and owner.role != 'customer':
+        raise HTTPException(403, 'Use a customer session to request catering.')
     if body.scheduled_at < now() + timedelta(hours=NOTICE_HOURS):
         raise HTTPException(422, f'Party orders require at least {NOTICE_HOURS} hours of notice.')
     choices = eligible_outlets(db, body.lat, body.lng)
@@ -74,7 +82,7 @@ def submit(body: PartyInput, db=Depends(get_db)):
         selected.add(item.id)
         items.append({'item_id': item.id, 'name': item.name, 'quantity': line.quantity})
     party = PartyRequest(
-        outlet_id=choices[0][1].id, name=body.name, phone=body.phone, address=body.address,
+        user_id=owner.id if owner else None, outlet_id=choices[0][1].id, name=body.name, phone=body.phone, address=body.address,
         scheduled_at=body.scheduled_at, notes=body.notes, items=items,
     )
     db.add(party)
@@ -91,38 +99,59 @@ def track(token: str, db=Depends(get_db)):
 
 
 @router.get('/staff/party')
-def queue(outlet_id: str, user=Depends(current_user), db=Depends(get_db)):
-    staff_outlet(user, outlet_id)
-    query = select(PartyRequest).where(PartyRequest.outlet_id == outlet_id)
-    if user.role == 'kitchen':
-        query = query.where(PartyRequest.status == 'accepted', PartyRequest.scheduled_at >= now())
-    rows = db.scalars(query.order_by(PartyRequest.scheduled_at).limit(100))
+def queue(outlet_id: str | None = None, user=Depends(current_user), db=Depends(get_db)):
+    outlet_id = staff_scope(user, outlet_id)
+    query = select(PartyRequest)
+    if outlet_id:
+        query = query.where(PartyRequest.outlet_id == outlet_id)
+    active = ['accepted', 'preparing', 'ready']
+    if user.role != 'kitchen':
+        active.append('pending')
+    rows = list(db.scalars(query.where(PartyRequest.status.in_(active)).order_by(PartyRequest.scheduled_at)))
+    if user.role == 'manager':
+        rows += list(db.scalars(query.where(PartyRequest.status.in_(['rejected', 'fulfilled'])).order_by(PartyRequest.created_at.desc()).limit(100)))
     return [
         {
             **public_party(db, party), 'id': party.id,
-            **({'name': party.name, 'address': party.address, 'notes': party.notes} if user.role == 'manager' else {}),
+            'notes': party.notes, **({'name': party.name, 'address': party.address} if user.role == 'manager' else {}),
         } for party in rows
     ]
 
 
 @router.post('/staff/party/{party_id}')
 def decide(party_id: str, body: PartyDecision, user=Depends(current_user), db=Depends(get_db)):
-    if user.role != 'manager':
-        raise HTTPException(403, 'Manager access is required.')
+    if user.role not in ('manager', 'kitchen'):
+        raise HTTPException(403, 'Staff access is required.')
     party = db.get(PartyRequest, party_id, with_for_update=True)
     if not party:
         raise HTTPException(404, 'Party request not found.')
     staff_outlet(user, party.outlet_id)
-    if party.status != 'pending':
-        raise HTTPException(409, 'This request already has a decision.')
+    transitions = {'pending': ['accepted', 'rejected'], 'accepted': ['preparing'], 'preparing': ['ready'], 'ready': ['fulfilled']}
+    if party.status == 'pending' and user.role != 'manager':
+        raise HTTPException(403, 'Only a manager can confirm a party request.')
+    if body.status not in transitions.get(party.status, []):
+        raise HTTPException(409, 'This party request has already changed. Refresh and retry.')
     if body.status == 'rejected' and len(body.reason) < 3:
         raise HTTPException(422, 'Provide a reason for the customer.')
     if body.status == 'accepted' and party.scheduled_at <= now():
         raise HTTPException(409, 'The requested time has already passed.')
     party.status = body.status
-    party.reason = body.reason or None
+    if body.status in ('accepted', 'rejected'):
+        party.reason = body.reason or None
     emit(db, 'party.updated', outlet_id=party.outlet_id, party_id=party.id)
     message = f'Party request {party.status}. {body.reason}'.strip()
     db.add(DemoMessage(kind='party', destination=party.phone, body=message))
     db.commit()
     return public_party(db, party)
+
+
+@router.get('/party/history')
+def history(request: Request, user=Depends(customer), db=Depends(get_db)):
+    if not user.contact_phone:
+        return []
+    phone = customer_history_phone(db, request, user)
+    query = select(PartyRequest).where(PartyRequest.phone == (phone or user.contact_phone))
+    if not phone:
+        query = query.where(PartyRequest.user_id == user.id)
+    rows = db.scalars(query.order_by(PartyRequest.created_at.desc()).limit(100))
+    return [{**public_party(db, p), 'id': p.id, 'token': p.token} for p in rows]

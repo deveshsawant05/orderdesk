@@ -1,9 +1,12 @@
 'use client';
 import TouchChoices from './TouchChoices';
 
+import Image from 'next/image';
+import {CalendarDays,Check,ChefHat,ArrowRight,Users} from 'lucide-react';
+import {Menu} from '@/lib/types';
 import {useState} from 'react';
 import {api, useResource} from '@/lib/api';
-import {PartyRecord, partyDate} from '@/lib/party';
+import {PartyRecord, partyDate, partyStatus} from '@/lib/party';
 import {ErrorBox, Loading} from '@/components/ui';
 
 type Report = {
@@ -27,48 +30,31 @@ export function OutletReport({outletId, revision}: {outletId:string;revision:num
   </section>;
 }
 
-export function PartyDesk({outletId, revision, kitchen=false}: {outletId:string;revision:number;kitchen?:boolean}) {
-  const requests = useResource<PartyRecord[]>('/staff/party?outlet_id='+outletId,revision);
-  if (kitchen && !requests.data?.length) return requests.error ? <ErrorBox message={requests.error} retry={requests.reload}/> : null;
-  return <section className={'service-pane'+(kitchen?' kitchen-party':' paper')}>
-    <h2>{kitchen ? 'Confirmed party schedule' : 'Party requests'}</h2>
-    <ErrorBox message={requests.error} retry={requests.reload}/>
-    {requests.loading && !requests.data && <Loading/>}
-    {requests.data?.length === 0 && <p className="muted">New catering requests will appear here.</p>}
-    {requests.data?.map(entry => <PartyRow key={entry.id} entry={entry} kitchen={kitchen} reload={requests.reload}/>)}
-  </section>;
+export function PartyDesk({outletId, revision, kitchen=false}: {outletId:string|null;revision:number;kitchen?:boolean}) {
+ const requests=useResource<PartyRecord[]>('/staff/party'+(outletId?'?outlet_id='+outletId:''),revision);
+ const menu=useResource<Menu>('/menu');
+ const [filter,setFilter]=useState('pending');
+ const rows=(requests.data??[]).filter(p=>kitchen?['accepted','preparing','ready'].includes(p.status):filter==='all'||(filter==='confirmed'?['accepted','preparing','ready'].includes(p.status):p.status===filter));
+ const pending=(requests.data??[]).filter(p=>p.status==='pending').length;
+ if(kitchen&&!rows.length)return requests.error?<ErrorBox message={requests.error} retry={requests.reload}/>:null;
+ return <section className={'party-desk-v2'+(kitchen?' kitchen-party-board':'')} aria-label={kitchen?'Scheduled party orders':'Party order desk'}>
+  <header className="party-desk-heading"><div><span className="eyebrow">{kitchen?'RESERVED FOR LATER':'CATERING / BY CONFIRMATION'}</span><h2>{kitchen?'Scheduled feasts':'Party orders'}</h2><p>{kitchen?'Confirmed catering, separate from immediate orders.':'Review the menu and quantities before reserving kitchen capacity.'}</p></div><span className="party-count"><Users size={18}/>{kitchen?rows.length:pending} {kitchen?'scheduled':'awaiting confirmation'}</span></header>
+  {!kitchen&&<TouchChoices label="Party order status" value={filter} onChange={setFilter} options={[{id:'pending',name:'Needs confirmation'},{id:'confirmed',name:'Confirmed & in progress'},{id:'fulfilled',name:'Fulfilled'},{id:'rejected',name:'Declined'},{id:'all',name:'All requests'}]}/>}
+  <ErrorBox message={requests.error} retry={requests.reload}/>{requests.loading&&!requests.data&&<Loading/>}
+  <div className="party-desk-grid">{rows.map(entry=><PartyRow key={entry.id} entry={entry} kitchen={kitchen} menu={menu.data} reload={requests.reload}/>)}</div>
+  {!requests.loading&&!rows.length&&<p className="party-desk-empty">{kitchen?'No confirmed parties scheduled.':'No party orders in this view.'}</p>}
+ </section>;
 }
-
-function PartyRow({entry, kitchen, reload}: {entry:PartyRecord;kitchen:boolean;reload:()=>Promise<void>}) {
-  const [decision, setDecision] = useState<'accepted'|'rejected'>('accepted');
-  const [reason, setReason] = useState('');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  return <article className="party-record">
-    <strong>{partyDate(entry.scheduled_at)}</strong>
-    <p>{entry.items.map(line => line.quantity+' × '+line.name).join(' · ')}</p>
-    {!kitchen && <>
-      <p>{entry.name} · {entry.address}</p>
-      {entry.notes && <p>{entry.notes}</p>}
-      <span className="status-pill">{entry.status}</span>
-      {entry.reason && <p>{entry.reason}</p>}
-      {entry.status === 'pending' && <form onSubmit={async event => {
-        event.preventDefault();
-        setBusy(true);
-        setError('');
-        try {
-          await api('/staff/party/'+entry.id,'POST',{status:decision,reason});
-          await reload();
-        } catch (failure) {setError((failure as Error).message);}
-        finally {setBusy(false);}
-      }}>
-        <div className="form-grid">
-          <TouchChoices label="Decision" value={decision} options={[{id:"accepted",name:"Confirm capacity"},{id:"rejected",name:"Decline request"}]} onChange={value=>setDecision(value as "accepted"|"rejected")}/>
-          <TouchChoices label="Message to customer" value={reason} options={["Confirmed with the kitchen","Item unavailable","Insufficient notice","Kitchen capacity","Outside service area"].map(name=>({id:name,name}))} onChange={setReason}/>
-        </div>
-        <ErrorBox message={error}/>
-        <button className="secondary" disabled={busy||(decision==="rejected"&&!reason)}>Record decision</button>
-      </form>}
-    </>}
-  </article>;
+function PartyRow({entry,kitchen,menu,reload}:{entry:PartyRecord;kitchen:boolean;menu:Menu|null;reload:()=>Promise<void>}){
+ const [declining,setDeclining]=useState(false),[reason,setReason]=useState('Kitchen capacity'),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const action=({accepted:{next:'preparing',label:'Start party preparation'},preparing:{next:'ready',label:'Mark feast ready'},ready:{next:'fulfilled',label:'Confirm party handoff'}} as Record<string,{next:string;label:string}>)[entry.status];
+ const decide=async(status:string,reason='')=>{setBusy(true);setError('');try{await api('/staff/party/'+entry.id,'POST',{status,reason});await reload();}catch(e){setError((e as Error).message);}finally{setBusy(false);}};
+ return <article className={'party-desk-card '+entry.status} data-party-id={entry.id}>
+  <header><span className="party-kind"><CalendarDays size={16}/> PARTY ORDER</span><span className={'status-pill '+entry.status}>{partyStatus(entry.status)}</span></header>
+  <div className="party-schedule"><small>Scheduled service · IST</small><strong>{partyDate(entry.scheduled_at)}</strong><span>{entry.outlet_name} · {entry.items.reduce((sum,i)=>sum+i.quantity,0)} portions</span></div>
+  <div className="party-card-dishes">{entry.items.map(line=>{const dish=menu?.items.find(item=>item.id===line.item_id);return <div key={line.item_id}>{!kitchen&&dish&&<Image src={dish.image} alt="" width={48} height={48}/>}<span>{line.name}</span><b>×{line.quantity}</b></div>;})}</div>
+  {!kitchen&&<div className="party-contact"><b>{entry.name}</b><p>{entry.address}</p><small>Quote and payment confirmed separately</small></div>}
+  {entry.notes&&<p className="party-card-note">{entry.notes}</p>}{entry.reason&&<p className="party-card-note">{entry.reason}</p>}<ErrorBox message={error}/>
+  <footer>{entry.status==='pending'&&!kitchen&&<>{declining?<div className="party-decline"><TouchChoices label="Decline reason" value={reason} options={['Kitchen capacity','Item unavailable','Insufficient notice'].map(name=>({id:name,name}))} onChange={setReason}/><button className="secondary" disabled={busy} onClick={()=>setDeclining(false)}>Keep request</button><button className="primary danger" disabled={busy} onClick={()=>void decide('rejected',reason)}>Confirm decline</button></div>:<><button className="primary" disabled={busy} onClick={()=>void decide('accepted','Confirmed with the kitchen')}><Check size={18}/> Accept party order</button><button className="secondary" disabled={busy} onClick={()=>setDeclining(true)}>Decline</button></>}</>}{action&&<button className="primary full" disabled={busy} onClick={()=>void decide(action.next)}><ChefHat size={18}/>{action.label}<ArrowRight size={17}/></button>}</footer>
+ </article>;
 }

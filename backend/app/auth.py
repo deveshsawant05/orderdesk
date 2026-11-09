@@ -54,6 +54,19 @@ def user_json(user):
     return {k:getattr(user,k) for k in ['id','email','name','role','outlet_id','can_manage','marketing_consent','demo']}
 
 
+def staff_scope(user, outlet_id=None):
+    """Only central managers may omit an outlet to read the whole chain."""
+    if outlet_id:
+        staff_outlet(user, outlet_id)
+        return outlet_id
+    if central_manager(user):
+        return None
+    staff_outlet(user, user.outlet_id)
+    if not user.outlet_id:
+        raise HTTPException(403, 'An assigned outlet is required.')
+    return user.outlet_id
+
+
 def customer_history_phone(db, request, user):
     """Resolve history identity from the session, never from an orders query parameter."""
     if user.role != 'customer' or not user.contact_phone:
