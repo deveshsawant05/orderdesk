@@ -100,3 +100,11 @@ class ItemInput(Strict):
 
 class StockInput(Strict):
     available: bool
+
+class AdjustTime(Strict):
+    delta_minutes: Literal[-5, 5]
+    version: int
+
+class ContactInput(Strict):
+    name: str | None = Field(default=None,min_length=2,max_length=80)
+    phone: str = Field(pattern=r"^[6-9][0-9]{9}$")

@@ -23,7 +23,7 @@ class Outlet(Base):
     radius_km: Mapped[float] = mapped_column(Float)
     minimum_minutes: Mapped[int] = mapped_column(Integer)
     is_open: Mapped[bool] = mapped_column(Boolean, default=True)
-    fssai: Mapped[str] = mapped_column(String(80), default='DEMO — NOT A VALID LICENCE')
+    fssai: Mapped[str] = mapped_column(String(80), default='00000000000000')
     synthetic: Mapped[bool] = mapped_column(Boolean, default=True)
     __table_args__ = (CheckConstraint('radius_km > 0 AND minimum_minutes > 0'),)
 
@@ -32,6 +32,7 @@ class User(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     email: Mapped[str] = mapped_column(String(180), unique=True)
     name: Mapped[str] = mapped_column(String(80))
+    contact_phone: Mapped[str | None] = mapped_column(String(10))
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(20), default='customer')
     outlet_id: Mapped[str | None] = mapped_column(ForeignKey('outlets.id'))
@@ -146,7 +147,7 @@ class Order(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     snapshot: Mapped[bool] = mapped_column(Boolean, default=False)
     snapshot_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    __table_args__ = (CheckConstraint('total_paise >= 0 AND total_paise = subtotal_paise - discount_paise'), CheckConstraint("status IN ('new','preparing','ready','handed_off','cancelled')"), Index('ix_orders_outlet_status', 'outlet_id','status'), UniqueConstraint('public_ref', name='uq_order_public_ref'), UniqueConstraint('tracking_token', name='uq_order_tracking_token'), UniqueConstraint('outlet_id','service_date','daily_number', name='uq_outlet_service_number'))
+    __table_args__ = (CheckConstraint('total_paise >= 0 AND total_paise = subtotal_paise - discount_paise'), CheckConstraint("status IN ('new','preparing','ready','handed_off','cancelled')"), Index('ix_orders_outlet_status', 'outlet_id','status'), Index('ix_orders_contact_placed','contact_phone','placed_at'), UniqueConstraint('public_ref', name='uq_order_public_ref'), UniqueConstraint('tracking_token', name='uq_order_tracking_token'), UniqueConstraint('outlet_id','service_date','daily_number', name='uq_outlet_service_number'))
 
 class DailyCounter(Base):
     __tablename__ = 'daily_counters'

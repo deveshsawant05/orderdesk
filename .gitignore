@@ -14,3 +14,4 @@ backend/.coverage
 .env.local
 *.tsbuildinfo
 frontend/next-env.d.ts
+operations/next-env.d.ts

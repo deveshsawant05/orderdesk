@@ -14,7 +14,7 @@ from .pricing import eligible_outlets
 from .schemas import Strict
 
 router = APIRouter()
-NOTICE_HOURS = 48
+NOTICE_HOURS = 6
 
 
 class PartyLine(Strict):

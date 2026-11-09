@@ -102,15 +102,26 @@ def test_state_machine_stale_version_and_permissions(client,db):
     assert client.get('/orders/'+o['id']).status_code==403
     assert client.get('/orders?outlet_id=kondapur').status_code==403
     signin(client,'kitchen','kondapur')
-    assert client.post('/orders/'+o['id']+'/status',json={'status':'preparing','version':1}).status_code==403
     assert client.post('/orders/'+o['id']+'/status',json={'status':'ready','version':1}).status_code==409
-    signin(client,'manager','kondapur')
     assert client.post('/orders/'+o['id']+'/status',json={'status':'preparing','version':1}).status_code==200
     assert client.post('/orders/'+o['id']+'/status',json={'status':'preparing','version':1}).status_code==409
     signin(client,'kitchen','kondapur')
     assert client.post('/orders/'+o['id']+'/status',json={'status':'ready','version':2}).status_code==200
     assert client.post('/orders/'+o['id']+'/status',json={'status':'handed_off','version':3}).status_code==200
     db.expire_all();assert by_ref(db,o['id']).status=='handed_off'
+    assert not any(order['id'] == o['id'] for order in client.get('/orders?queue=true').json())
+    assert any(order['id'] == o['id'] for order in client.get('/orders?history=true').json())
+    signin(client)
+    _, result = pay(client,fill_cart(client),key='unavailable-item')
+    order_id = result['order']['id']
+    signin(client,'kitchen','kondapur')
+    cancel = {'status':'cancelled','version':1,'reason':'Kitchen capacity'}
+    assert client.post('/orders/'+order_id+'/status',json=cancel).status_code == 403
+    response = client.post('/orders/'+order_id+'/status',json={**cancel,'reason':'Item unavailable'})
+    assert response.status_code == 200 and response.json()['refunded_at']
+    signin(client,'manager','all')
+    assert client.get('/orders?outlet_id=kondapur').status_code == 200
+    assert client.get('/orders?outlet_id=kukatpally').status_code == 200
 
 def test_prediction_real_model_and_fallback(db):
     o=db.get(Outlet,'kondapur');lines=[{'quantity':2,'prep_minutes':30}]
@@ -130,15 +141,22 @@ def test_late_escalation_once_and_manager_override(client,db):
     assert escalate_late(db)==0
     assert len(db.scalars(select(Notification).where(Notification.order_id==o.id,Notification.kind=='late')).all())==2
     signin(client,'manager','kondapur')
-    r=client.post('/orders/'+id+'/override',json={'version':1,'minutes_from_now':20,'reason':'Extra time on dum needed.'})
+    r=client.post('/orders/'+id+'/adjust-time',json={'version':1,'delta_minutes':5})
     assert r.status_code==200,r.text
     db.expire_all();o=by_ref(db,id);assert o.revised_at>now() and o.promised_at<now()
-    assert db.scalar(select(Override).where(Override.order_id==o.id))
+    assert db.scalar(select(Override).where(Override.order_id==o.id)) is None
 
 def test_auth_privacy_csrf_and_consent(client,db):
     assert client.get('/menu').status_code==200
     assert client.get('/menu').json()['items'][0]['in_stock'] is None
-    assert client.post('/auth/guest',headers={'X-OrderDesk':'0'}).status_code==403
+    origin = client.headers['origin']
+    preflight = {'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'X-OrderDesk, Content-Type'}
+    allowed = client.options('/auth/guest',headers=preflight)
+    assert allowed.status_code == 200 and allowed.headers['access-control-allow-origin'] == origin
+    denied = client.options('/auth/guest',headers={**preflight,'Origin':'https://evil.example'})
+    assert denied.status_code == 400 and 'access-control-allow-origin' not in denied.headers
+    rejected = client.post('/auth/guest',headers={'X-OrderDesk':'0'})
+    assert rejected.status_code == 403 and rejected.headers['access-control-allow-origin'] == origin
     assert client.post('/auth/guest',headers={'Origin':'https://evil.example'}).status_code==403
     r=client.post('/auth/register',json={'email':'test-only@example.invalid','name':'Test Only','password':'synthetic-test-password'})
     assert r.status_code==200,r.text

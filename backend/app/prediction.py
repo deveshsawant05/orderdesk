@@ -25,7 +25,7 @@ def train_if_missing(db):
     db.add(PredictionModel(id=MODEL_ID,coefficients=coef.tolist(),feature_names=FEATURES,metrics={'heldout_mae_minutes':round(mae,3),'train_rows':480,'test_rows':120,'synthetic':True,'seed':2026}))
 
 def predict(db,outlet,lines):
-    active=list(db.scalars(select(Order).where(Order.outlet_id==outlet.id,Order.snapshot.is_(False),Order.status.in_(['new','preparing']))))
+    active=list(db.scalars(select(Order).where(Order.outlet_id==outlet.id,Order.snapshot.is_(False),Order.placed_at>=now()-timedelta(hours=12),Order.status.in_(['new','preparing']))))
     quantities=db.scalar(select(func.coalesce(func.sum(OrderItem.quantity),0)).where(OrderItem.order_id.in_([o.id for o in active]))) or 0
     recent=list(db.scalars(select(Order).where(Order.outlet_id==outlet.id,Order.snapshot.is_(False),Order.completed_at.is_not(None),Order.placed_at>now()-timedelta(days=7)).order_by(Order.completed_at.desc()).limit(20)))
     durations=[(o.completed_at-o.placed_at).total_seconds()/60 for o in recent]

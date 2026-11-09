@@ -5,10 +5,10 @@ import dynamic from 'next/dynamic';
 import {ArrowRight, LocateFixed, MapPin, Search} from 'lucide-react';
 import {api, useResource} from '@/lib/api';
 import {Cart, Outlet} from '@/lib/types';
-import {ErrorBox, Modal} from './ui';
-import type {Point} from './StreetMap';
+import {ErrorBox, Modal} from '@/components/ui';
+import type {Point} from '@/components/StreetMap';
 
-const StreetMap = dynamic(() => import('./StreetMap'), {
+const StreetMap = dynamic(() => import('@/components/StreetMap'), {
   ssr:false,
   loading:() => <div className="street-map map-loading" role="status">Loading Hyderabad street map…</div>,
 });
@@ -80,27 +80,30 @@ function readPoint(lat:string,lng:string): Point|null {
 
 type Route = {distance_km:number; path:Point[]};
 
-function useRoadRoute(key:string|null) {
-  const [current, setCurrent] = useState<{key:string;route?:Route;error?:string;busy?:boolean}|null>(null);
+function useRoadRoute(token:string) {
+  const [current, setCurrent] = useState<{token:string;route?:Route;error?:string}|null>(null);
   const sequence = useRef(0);
-  const load = async (url:string) => {
-    if (!key) return;
+  const load = useCallback(async () => {
     const request = ++sequence.current;
-    setCurrent({key,busy:true});
+    setCurrent(null);
     try {
-      const route = await api<Route>(url,'POST');
-      if (request === sequence.current) setCurrent({key,route});
+      const route = await api<Route>('/tracking/'+token+'/road-route','POST');
+      if (request === sequence.current) setCurrent({token,route});
     } catch (failure) {
-      if (request === sequence.current) setCurrent({key,error:(failure as Error).message});
+      if (request === sequence.current) setCurrent({token,error:(failure as Error).message});
     }
-  };
-  return {...(current?.key === key ? current : null),load};
+  },[token]);
+  useEffect(() => {
+    const pending = sequence;
+    const timer = setTimeout(load,0);
+    return () => {clearTimeout(timer);pending.current++;};
+  },[load]);
+  const result = current?.token === token ? current : null;
+  return {...result,busy:!result,load};
 }
 
-const routeDisclosure = 'Road routing sends the outlet and pin coordinates to the routing provider. The demo provider logs requests.';
 
 export function TrackingMap({token, outlet, destination}: {token:string;outlet:Point&{name:string};destination:Point}) {
-  const [show, setShow] = useState(false);
   const {lat, lng, name} = outlet;
   const {lat:destinationLat, lng:destinationLng} = destination;
   const markers = useMemo(() => [
@@ -108,21 +111,17 @@ export function TrackingMap({token, outlet, destination}: {token:string;outlet:P
     {name:'Drop location',lat:destinationLat,lng:destinationLng,endpoint:'drop' as const},
   ],[name,lat,lng,destinationLat,destinationLng]);
   const road = useRoadRoute(token);
-  const load = () => road.load('/tracking/'+token+'/road-route');
   return <div className="tracking-street-map">
-    <button type="button" className="secondary" aria-expanded={show} onClick={() => {
-      if (!show && !road.route && !road.busy) void load();
-      setShow(!show);
-    }}>{show ? 'Hide delivery map' : 'Show road route'}</button>
-    {!show && <small>{routeDisclosure}</small>}
-    {show && <>
-      <StreetMap markers={markers} route={road.route?.path}/>
-      {road.busy && <p role="status">Finding a driving route…</p>}
-      {road.route && <p className="road-distance"><strong>{road.route.distance_km.toFixed(2)} km by road</strong> · Outlet to destination</p>}
-      <ErrorBox message={road.error || ''} retry={load}/>
-      <small>Hotel · {name} &nbsp; | &nbsp; Drop location{road.route && ' · Blue line shows the driving route'}</small>
-      <small><a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noreferrer">Report a map issue</a></small>
-    </>}
+    <StreetMap markers={markers} route={road.route?.path}/>
+    <div className="tracking-map-footer">
+      <div>
+        {road.route && <p className="road-distance"><strong>{road.route.distance_km.toFixed(2)} km by road</strong> · Blue line shows the driving route</p>}
+        {road.busy && <p role="status">Finding a driving route…</p>}
+
+      </div>
+      <a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noreferrer">Report a map issue</a>
+      <ErrorBox message={road.error || ''} retry={road.load}/>
+    </div>
   </div>;
 }
 
@@ -177,7 +176,7 @@ export default function Location({cart, outlets, close, save}: {
         setAddress([place.title,place.context].filter(Boolean).join(', '));
       }}/>
       <p>Scroll or pinch to zoom. Tap the map or drag the pin to refine your location.</p>
-      <small>Indigo dots mark demo kitchens. The map provider receives tile requests for the visible area.</small>
+
       {outlets.length > 0
         ? <StreetMap markers={outlets} point={point} focus={focus} choose={choose} coverage={outlet}/>
         : <div className="street-map map-loading" role="status">Loading outlet locations…</div>}
@@ -207,8 +206,8 @@ export default function Location({cart, outlets, close, save}: {
       <label>Delivery address<input required minLength={5} maxLength={300} value={address}
         onChange={event => setAddress(event.target.value)} placeholder="Flat, building, street and landmark"/></label>
       <details className="delivery-input-options">
-        <summary>Demo points and manual coordinates</summary>
-        <label>Try a demo delivery point
+        <summary>Nearby localities and coordinates</summary>
+        <label>Choose a nearby locality
           <select defaultValue="" onChange={event => {
             const outlet = outlets.find(entry => entry.id === event.target.value);
             if (!outlet) return;

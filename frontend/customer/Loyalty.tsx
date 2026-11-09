@@ -2,7 +2,7 @@
 
 import {useState} from 'react';
 import {api, useResource} from '@/lib/api';
-import {ErrorBox} from './ui';
+import {ErrorBox} from '@/components/ui';
 
 export type LoyaltyStatus = {
   phone: string | null; balance: number; value_paise: number; cap_percent: number; demo_enabled: boolean;
@@ -43,9 +43,9 @@ export default function Loyalty({phone, loyalty, points, setPoints, maxPoints}: 
           await api('/auth/loyalty/challenge', 'POST', {phone});
           setRequestedFor(phone);
           setCode('');
-        })}>Queue demo SMS</button>
+        })}>Send verification code</button>
       {requestedFor === phone && requestedFor && <>
-        <p role="status">Mock SMS queued. Read the code from the local demo inbox.</p>
+        <p role="status">Mock SMS queued. Read the code from the local test inbox.</p>
         <label>Six-digit verification code<input value={code} inputMode="numeric" maxLength={6}
           autoComplete="one-time-code" onChange={event => setCode(event.target.value)}/></label>
         <button type="button" className="secondary" disabled={busy || !(/^[0-9]{6}$/).test(code)}

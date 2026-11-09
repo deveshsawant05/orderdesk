@@ -20,9 +20,10 @@ def token_hash(token: str):
 
 def create_session(db, user, response: Response):
     token = secrets.token_urlsafe(32)
-    db.add(Session(token_hash=token_hash(token), user_id=user.id, expires_at=now()+timedelta(hours=12)))
+    lifetime = 30*24*3600 if user.role == "customer" else 12*3600
+    db.add(Session(token_hash=token_hash(token), user_id=user.id, expires_at=now()+timedelta(seconds=lifetime)))
     db.commit()
-    response.set_cookie(COOKIE if user.role == 'customer' else STAFF_COOKIE, token, httponly=True, secure=os.getenv('COOKIE_SECURE') == 'true', samesite='lax', max_age=43200, path='/')
+    response.set_cookie(COOKIE if user.role == 'customer' else STAFF_COOKIE, token, httponly=True, secure=os.getenv('COOKIE_SECURE') == 'true', samesite='lax', max_age=lifetime, path='/')
 
 def current_user(request: Request, db: DBSession = Depends(get_db)):
     token = request.cookies.get(session_cookie(request), '')
@@ -51,3 +52,15 @@ def staff_outlet(user, outlet_id):
 
 def user_json(user):
     return {k:getattr(user,k) for k in ['id','email','name','role','outlet_id','can_manage','marketing_consent','demo']}
+
+
+def customer_history_phone(db, request, user):
+    """Resolve history identity from the session, never from an orders query parameter."""
+    if user.role != 'customer' or not user.contact_phone:
+        return None
+    session=db.get(Session,token_hash(request.cookies.get(session_cookie(request),'')))
+    if not session or session.user_id != user.id or session.expires_at <= now():
+        return None
+    if session.verified_phone == user.contact_phone or os.getenv('MOBILE_LOGIN_SKIP_OTP','false') == 'true':
+        return user.contact_phone
+    return None

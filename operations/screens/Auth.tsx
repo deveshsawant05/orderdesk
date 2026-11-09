@@ -4,7 +4,7 @@ import {useState} from 'react';
 import {ArrowRight} from 'lucide-react';
 import {api} from '@/lib/api';
 import {User} from '@/lib/types';
-import {ErrorBox} from './ui';
+import {ErrorBox} from '@/components/ui';
 
 export default function Auth({onLogin}: {onLogin: (user: User) => void}) {
   const [busy, setBusy] = useState(false);
@@ -14,7 +14,7 @@ export default function Auth({onLogin}: {onLogin: (user: User) => void}) {
       <span className="ops-brand">OrderDesk <small>OPERATIONS</small></span>
       <div><span className="eyebrow">COMPANY A · HYDERABAD</span><h1>On the pass.</h1>
       <p>Live orders, kitchen tickets and outlet stock.</p></div>
-      <small>Staff workspace · Company A demonstration</small>
+      <small>Staff workspace · Company A</small>
     </section>
     <section className="auth-panel">
       <span className="eyebrow">STAFF ACCESS</span><h2>Sign in to your outlet.</h2>
@@ -22,6 +22,7 @@ export default function Auth({onLogin}: {onLogin: (user: User) => void}) {
       <ErrorBox message={error}/>
       <form onSubmit={async event => {
         event.preventDefault();
+        if(String(new FormData(event.currentTarget).get("email")).startsWith("kitchen."))void document.documentElement.requestFullscreen?.().catch(()=>{});
         setBusy(true);
         setError('');
         const fields = new FormData(event.currentTarget);

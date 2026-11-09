@@ -1,4 +1,6 @@
 from collections import defaultdict
+from datetime import timedelta
+from math import ceil
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -6,9 +8,31 @@ from sqlalchemy.dialects.postgresql import insert
 
 from .auth import staff_outlet
 from .models import DailyCounter, Estimate, Event, Notification, Order, OrderItem, Outlet, Override, Payment
-from .pricing import IST
+from .pricing import IST, distance_km
 
 NEXT = {'new': 'preparing', 'preparing': 'ready', 'ready': 'handed_off'}
+
+
+def estimated_arrival(order, road_km=None):
+    lat, lng = order['destination_lat'], order['destination_lng']
+    if order['status'] == 'cancelled' or lat is None or lng is None:
+        return None
+
+    departure = order['revised_at'] or order['promised_at']
+    if order['status'] == 'ready' and order['completed_at'] is not None:
+        departure = order['completed_at']
+    if order['status'] == 'handed_off':
+        handoff = next((event for event in reversed(order['events'])
+                        if event['kind'] == 'order.handed_off'), None)
+        if handoff is None:
+            return None
+        departure = handoff['created_at']
+
+    # Demo estimate uses a five-minute buffer and an effective 20 km/h by straight-line distance.
+    if road_km is None:
+        return None
+    km = road_km
+    return departure + timedelta(minutes=5 + ceil(km * 3))
 
 
 def next_number(db, outlet_id, placed_at):
@@ -28,12 +52,18 @@ def tracking_order(db, token):
     return order
 
 
-def accessible_order(db, user, order_id, lock=False):
+def customer_order_scope(user, phone=None):
+    return Order.contact_phone == phone if phone else Order.user_id == user.id
+
+
+def accessible_order(db, user, order_id, lock=False, customer_phone=None):
     query = select(Order).where(Order.public_ref == order_id)
+    if user.role == 'customer':
+        query = query.where(customer_order_scope(user,customer_phone))
     if lock:
         query = query.with_for_update()
     order = db.scalar(query)
-    if not order or (user.role == 'customer' and order.user_id != user.id):
+    if not order:
         raise HTTPException(404, 'Order not found.')
     if user.role != 'customer':
         staff_outlet(user, order.outlet_id)

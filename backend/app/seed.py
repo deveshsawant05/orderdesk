@@ -37,6 +37,11 @@ def seed(db):
     for id,name,kind,lat,lng in OUTLETS:
         if not db.get(Outlet,id):
             db.add(Outlet(id=id,name=name,kind=kind,address=f'Synthetic demo location · {name}, Hyderabad',lat=lat,lng=lng,radius_km=5,minimum_minutes=30 if kind=='restaurant' else 25))
+    for outlet in db.scalars(select(Outlet)):
+        if outlet.synthetic and outlet.fssai.startswith('DEMO'):
+            outlet.fssai = '00000000000000'
+        if outlet.synthetic and outlet.address.startswith('Synthetic demo location'):
+            outlet.address = f'{outlet.name}, Hyderabad'
     db.flush()
     categories=[('biryani','Dum biryanis'),('specials','Slow-cooked specials'),('sides','On the side'),('desserts','Sweet endings')]
     for position,(id,name) in enumerate(categories):
@@ -67,6 +72,7 @@ def seed(db):
     if not password:
         raise RuntimeError('Set DEMO_PASSWORD for synthetic demo accounts.')
     accounts=[('customer@orderdesk.demo','Demo customer','customer',None,False),('admin@orderdesk.demo','Central manager','manager',None,True)]
+    accounts.append(('manager.all@orderdesk.demo','All-outlet manager','manager',None,True))
     accounts += [(f'kitchen.{id}@orderdesk.demo',f'{name} kitchen','kitchen',id,False) for id,name,*_ in OUTLETS]
     accounts += [(f'manager.{id}@orderdesk.demo',f'{name} manager','manager',id,False) for id,name,*_ in OUTLETS]
     for email,name,role,outlet_id,manager in accounts:

@@ -2,6 +2,7 @@ import asyncio, contextlib, json, logging, os, time
 from collections import Counter, defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from urllib.parse import urlsplit
 from fastapi import FastAPI, Depends, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,12 +12,12 @@ from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy.orm import Session as DBSession
 from .db import get_db, SessionLocal
 from .models import *
-from .auth import current_user, customer, admin, central_manager, staff_outlet, user_json, hasher, create_session, token_hash, session_cookie
+from .auth import current_user, customer, admin, central_manager, staff_outlet, user_json, hasher, create_session, token_hash, session_cookie, customer_history_phone
 from .schemas import *
 from .pricing import quote, eligible_outlets, time_available
 from .road_routing import road_route
 from .prediction import predict
-from .orders import accessible_order, order_json, orders_json, tracking_order, next_number, NEXT
+from .orders import customer_order_scope, accessible_order, estimated_arrival, order_json, orders_json, tracking_order, next_number, NEXT
 from .events import emit, notify, escalate_late
 from .party import router as party_router, find_party
 from .places import router as places_router
@@ -49,14 +50,29 @@ app.include_router(loyalty_router)
 app.include_router(party_router)
 app.include_router(places_router)
 app.include_router(reporting_router)
-ORIGIN=os.getenv('APP_ORIGIN','http://localhost:3010')
-app.add_middleware(CORSMiddleware,allow_origins=[ORIGIN],allow_credentials=True,allow_methods=['GET','POST','PUT','PATCH','DELETE'],allow_headers=['Content-Type','X-OrderDesk','X-OrderDesk-Experience','Last-Event-ID'])
+def browser_origins(origin):
+    origin = origin.strip().rstrip('/')
+    parsed = urlsplit(origin)
+    origins = [origin]
+    if parsed.hostname in ('localhost', '127.0.0.1'):
+        other_host = '127.0.0.1' if parsed.hostname == 'localhost' else 'localhost'
+        port = f':{parsed.port}' if parsed.port is not None else ''
+        origins.append(f'{parsed.scheme}://{other_host}{port}')
+    return origins
+
+
+ALLOWED_ORIGINS = browser_origins(os.getenv('APP_ORIGIN', 'http://localhost:3000'))
+for setting in ('OPS_APP_ORIGIN', 'TUNNEL_APP_ORIGIN'):
+    origin = os.getenv(setting, '').strip().rstrip('/')
+    if origin:
+        ALLOWED_ORIGINS.extend(browser_origins(origin))
 limits=defaultdict(deque)
 
 @app.middleware('http')
 async def protect(request,call_next):
     if request.method not in ('GET','HEAD','OPTIONS'):
-        if request.headers.get('origin') not in (None,ORIGIN) or request.headers.get('x-orderdesk')!='1':
+        origin = request.headers.get('origin')
+        if (origin is not None and origin not in ALLOWED_ORIGINS) or request.headers.get('x-orderdesk')!='1':
             return JSONResponse({'detail':'Request origin or CSRF header rejected.'},403)
     if (request.url.path.startswith('/auth/') or request.url.path == '/party') and request.method=='POST':
         key=request.client.host
@@ -68,9 +84,18 @@ async def protect(request,call_next):
         q.append(time.monotonic())
     response=await call_next(request)
     response.headers['X-Content-Type-Options']='nosniff'
-    response.headers['Cache-Control']='no-store'
+    response.headers.setdefault('Cache-Control','no-store')
     response.headers['Referrer-Policy']='no-referrer'
     return response
+
+# CORS wraps the request guard so trusted browsers can read its rejection responses.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    allow_headers=['Content-Type', 'X-OrderDesk', 'X-OrderDesk-Experience', 'Last-Event-ID'],
+)
 
 @app.exception_handler(SQLAlchemyError)
 async def database_error(request,exc):
@@ -133,6 +158,34 @@ def guest(request: Request, response: Response, db: DBSession = Depends(get_db))
 def me(user:User=Depends(current_user)):
     return user_json(user)
 
+@app.get('/auth/profile')
+def profile(request:Request,user:User=Depends(customer),db:DBSession=Depends(get_db)):
+    order=db.scalar(select(Order).where(customer_order_scope(user,customer_history_phone(db,request,user)),Order.snapshot.is_(False)).order_by(Order.placed_at.desc()).limit(1))
+    return {'name':user.name if user.contact_phone and user.name != 'Guest' else (order.contact_name if order else ''), 'phone':user.contact_phone or (order.contact_phone if order else ''),
+            'address':order.address if order else '', 'marketing_consent':user.marketing_consent}
+
+@app.post('/auth/contact')
+def save_contact(body:ContactInput,user:User=Depends(customer),db:DBSession=Depends(get_db)):
+    if user.contact_phone != body.phone:
+        user.marketing_consent=False;user.consent_updated_at=now()
+    user.contact_phone=body.phone
+    if body.name:user.name=body.name
+    db.commit()
+    return {'phone':body.phone}
+
+@app.post('/auth/mobile')
+def mobile_login(body:ContactInput,request:Request,user:User=Depends(customer),db:DBSession=Depends(get_db)):
+    if os.getenv('MOBILE_LOGIN_SKIP_OTP','false') != 'true' and verified_phone(db,request) != body.phone:
+        raise HTTPException(403,'Verify your mobile number before accessing its order history.')
+    if user.contact_phone != body.phone:
+        user.marketing_consent=False;user.consent_updated_at=now()
+        user.name=body.name or 'Guest'
+    elif body.name:
+        user.name=body.name
+    user.contact_phone=body.phone
+    db.commit()
+    return {'phone':body.phone}
+
 @app.get('/outlets')
 def outlets(db:DBSession=Depends(get_db)):
     return [{k:getattr(o,k) for k in ['id','name','kind','city','address','lat','lng','radius_km','minimum_minutes','is_open','fssai','synthetic']} for o in db.scalars(select(Outlet).order_by(Outlet.name))]
@@ -180,6 +233,7 @@ def cart_json(db,cart):
             data['quote']=quote(db,cart.outlet_id,cart.lines,cart.lat,cart.lng,cart.coupon)
         except HTTPException as e:
             data['validation_error']=e.detail
+    data['item_details']={i.id:{'name':i.name,'image':i.image} for i in db.scalars(select(MenuItem).where(MenuItem.id.in_([line['item_id'] for line in cart.lines])))}
     return data
 
 @app.get('/cart')
@@ -286,6 +340,7 @@ def confirm_payment(payment_id:str,body:ConfirmPayment,user:User=Depends(custome
     db.add(Estimate(order_id=order.id,**estimate))
     record_points(db, order, 'redeemed', -points, account)
     payment.status='success'; cart.lines=[]; cart.coupon=''; cart.version+=1
+    user.name=snap['name'];user.contact_phone=snap['phone']
     user.marketing_consent = snap['marketing_consent']
     user.consent_updated_at = placed
     notify(db,order,'new','Your test payment succeeded. The kitchen has received your order.')
@@ -294,10 +349,10 @@ def confirm_payment(payment_id:str,body:ConfirmPayment,user:User=Depends(custome
     return {'status':'success','order':order_json(db,order,include_token=True)}
 
 @app.get('/orders')
-def orders(outlet_id:str|None=None,snapshots:bool=False,queue:bool=False,user:User=Depends(current_user),db:DBSession=Depends(get_db)):
+def orders(request:Request,outlet_id:str|None=None,snapshots:bool=False,queue:bool=False,history:bool=False,user:User=Depends(current_user),db:DBSession=Depends(get_db)):
     query=select(Order).where(Order.snapshot==snapshots)
     if user.role=='customer':
-        query=query.where(Order.user_id==user.id)
+        query=query.where(customer_order_scope(user,customer_history_phone(db,request,user)))
     else:
         outlet_id=outlet_id or user.outlet_id
         if not outlet_id:
@@ -305,7 +360,9 @@ def orders(outlet_id:str|None=None,snapshots:bool=False,queue:bool=False,user:Us
         staff_outlet(user,outlet_id)
         query=query.where(Order.outlet_id==outlet_id)
         if queue:
-            query=query.where(Order.status.in_(['new','preparing','ready']))
+            query=query.where(Order.status.in_(['new','preparing','ready']),Order.placed_at>=now()-timedelta(hours=12))
+        elif history:
+            query=query.where(or_(Order.status.in_(['handed_off','cancelled']),Order.placed_at<now()-timedelta(hours=12)))
     query = query.order_by(Order.placed_at.desc())
     if not queue or user.role == 'customer':
         query = query.limit(100)
@@ -325,12 +382,18 @@ def tracking_road_route(token: str, db: DBSession = Depends(get_db)):
 
 @app.get('/tracking/{token}')
 def track(token: str, db: DBSession = Depends(get_db)):
-    return order_json(db, tracking_order(db, token))
+    order = order_json(db, tracking_order(db, token))
+    db.close()
+    try:
+        route=road_route((order['outlet_lat'],order['outlet_lng']),(order['destination_lat'],order['destination_lng'])) if order['destination_lat'] is not None else None
+    except HTTPException:
+        route=None
+    return {**order, 'estimated_arrival_at': estimated_arrival(order,route['distance_km'] if route else None)}
 
 
 @app.get('/orders/{order_id}')
-def get_order(order_id:str,user:User=Depends(current_user),db:DBSession=Depends(get_db)):
-    return order_json(db,accessible_order(db,user,order_id),user.role=='customer')
+def get_order(order_id:str,request:Request,user:User=Depends(current_user),db:DBSession=Depends(get_db)):
+    return order_json(db,accessible_order(db,user,order_id,customer_phone=customer_history_phone(db,request,user)),user.role=='customer')
 
 @app.post('/orders/{order_id}/status')
 def status(order_id:str,body:Transition,user:User=Depends(current_user),db:DBSession=Depends(get_db)):
@@ -339,9 +402,9 @@ def status(order_id:str,body:Transition,user:User=Depends(current_user),db:DBSes
         raise HTTPException(409,'Client snapshot records are read-only. Place a live order to test the workflow.')
     if order.version!=body.version:
         raise HTTPException(409,'Another kitchen screen updated this order. The board will refresh; retry with the latest status.')
-    if body.status in ('preparing', 'cancelled') and user.role != 'manager':
-        raise HTTPException(403, 'An outlet manager must accept or cancel this order.')
     if body.status == 'cancelled':
+        if user.role == 'kitchen' and body.reason != 'Item unavailable':
+            raise HTTPException(403, 'Kitchen staff can cancel orders only for unavailable items.')
         if order.status not in ('new', 'preparing') or len(body.reason) < 3:
             raise HTTPException(409, 'Only active orders can be cancelled. Include a reason.')
         order.resolution_reason = body.reason
@@ -370,19 +433,21 @@ def status(order_id:str,body:Transition,user:User=Depends(current_user),db:DBSes
     db.commit()
     return order_json(db,order,False)
 
-@app.post('/orders/{order_id}/override')
-def override(order_id:str,body:OverrideInput,user:User=Depends(current_user),db:DBSession=Depends(get_db)):
+@app.post('/orders/{order_id}/adjust-time')
+def adjust_time(order_id:str,body:AdjustTime,user:User=Depends(current_user),db:DBSession=Depends(get_db)):
     order=accessible_order(db,user,order_id,True); staff_outlet(user,order.outlet_id)
-    if user.role != 'manager' or order.snapshot or order.status not in ('new','preparing'):
-        raise HTTPException(403,'A manager can revise active live orders only.')
-    if order.version!=body.version:
-        raise HTTPException(409,'Order changed. Refresh before revising the estimate.')
+    if user.role not in ('manager','kitchen') or order.snapshot or order.status not in ('new','preparing'):
+        raise HTTPException(403,'Only active kitchen orders can be adjusted.')
+    if order.version != body.version:
+        raise HTTPException(409,'Order changed. Please retry with the latest ticket.')
     estimate=db.get(Estimate,order.id)
-    revised=max(now()+timedelta(minutes=body.minutes_from_now),order.placed_at+timedelta(minutes=estimate.minimum_minutes))
-    db.add(Override(order_id=order.id,user_id=user.id,reason=body.reason,previous_at=order.revised_at or order.promised_at,revised_at=revised))
-    order.revised_at=revised; order.version+=1
-    notify(db,order,f'override-{order.version}',f'The kitchen revised your ready time. {body.reason}')
-    emit(db,'order.eta_updated',order,{'reason':body.reason,'revised_at':revised.isoformat()})
+    previous=order.revised_at or order.promised_at
+    minimum=order.placed_at+timedelta(minutes=estimate.minimum_minutes)
+    revised=max(now(),minimum,max(now(),previous)+timedelta(minutes=body.delta_minutes))
+    order.revised_at=revised;order.version+=1
+    message='Delivery will take longer than expected.' if revised>previous else 'Your delivery time has been updated.'
+    notify(db,order,f'eta-{order.version}',message)
+    emit(db,'order.eta_updated',order,{'message':message,'revised_at':revised.isoformat()})
     db.commit()
     return order_json(db,order,False)
 
@@ -484,7 +549,7 @@ def event_response(request, db, scope, session=None):
             await asyncio.sleep(1)
 
     return StreamingResponse(generate(), media_type='text/event-stream',
-                             headers={'X-Accel-Buffering': 'no'})
+                             headers={'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store, no-transform'})
 
 
 @app.get('/events/menu')

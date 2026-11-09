@@ -1,9 +1,10 @@
 'use client';
+import TouchChoices from './TouchChoices';
 
 import {useState} from 'react';
 import {api, useResource} from '@/lib/api';
-import {PartyRecord, partyDate} from './Party';
-import {ErrorBox, Loading} from './ui';
+import {PartyRecord, partyDate} from '@/lib/party';
+import {ErrorBox, Loading} from '@/components/ui';
 
 type Report = {
   days:number; orders:number; cancelled:number; median_prep_minutes:number|null; repeat_verified_customers:number;
@@ -13,18 +14,16 @@ export function OutletReport({outletId, revision}: {outletId:string;revision:num
   const [days, setDays] = useState(7);
   const report = useResource<Report>(`/staff/report?outlet_id=${outletId}&days=${days}`,revision);
   return <section className="paper service-pane">
-    <label>Reporting window<select value={days} onChange={event => setDays(Number(event.target.value))}>
-      {[7,30,90].map(value => <option key={value} value={value}>Last {value} days</option>)}
-    </select></label>
+    <TouchChoices label="Reporting window" value={String(days)} options={[7,30,90].map(value=>({id:String(value),name:"Last "+value+" days"}))} onChange={value=>setDays(Number(value))}/>
     <ErrorBox message={report.error} retry={report.reload}/>
     {report.loading && !report.data && <Loading/>}
     {report.data && <dl className="report-list">
       <div><dt>Paid orders</dt><dd>{report.data.orders}</dd></div>
       <div><dt>Cancelled orders</dt><dd>{report.data.cancelled}</dd></div>
-      <div><dt>Median prep · acceptance to ready</dt><dd>{report.data.median_prep_minutes === null ? '—' : report.data.median_prep_minutes+' min'}</dd></div>
+      <div><dt>Median prep · start to ready</dt><dd>{report.data.median_prep_minutes === null ? '—' : report.data.median_prep_minutes+' min'}</dd></div>
       <div><dt>Verified customers with 2+ handoffs in this window</dt><dd>{report.data.repeat_verified_customers}</dd></div>
     </dl>}
-    <small>Scope is the selected outlet and rolling order placement window. Client snapshots are excluded.</small>
+    <small>Scope is the selected outlet and rolling order placement window.</small>
   </section>;
 }
 
@@ -64,17 +63,11 @@ function PartyRow({entry, kitchen, reload}: {entry:PartyRecord;kitchen:boolean;r
         finally {setBusy(false);}
       }}>
         <div className="form-grid">
-          <label>Decision<select value={decision} onChange={event => setDecision(event.target.value as 'accepted'|'rejected')}>
-            <option value="accepted">Confirm capacity</option><option value="rejected">Reject request</option>
-          </select></label>
-          <label>Message to customer<input value={reason} onChange={event => setReason(event.target.value)}
-            maxLength={300} minLength={decision==='rejected'?3:0} required={decision==='rejected'} list={'party-reasons-'+entry.id}/></label>
-          <datalist id={'party-reasons-'+entry.id}>
-            {['Item unavailable','Insufficient notice','Kitchen capacity','Outside service area'].map(text => <option value={text} key={text}/>)}
-          </datalist>
+          <TouchChoices label="Decision" value={decision} options={[{id:"accepted",name:"Confirm capacity"},{id:"rejected",name:"Decline request"}]} onChange={value=>setDecision(value as "accepted"|"rejected")}/>
+          <TouchChoices label="Message to customer" value={reason} options={["Confirmed with the kitchen","Item unavailable","Insufficient notice","Kitchen capacity","Outside service area"].map(name=>({id:name,name}))} onChange={setReason}/>
         </div>
         <ErrorBox message={error}/>
-        <button className="secondary" disabled={busy}>Record decision</button>
+        <button className="secondary" disabled={busy||(decision==="rejected"&&!reason)}>Record decision</button>
       </form>}
     </>}
   </article>;

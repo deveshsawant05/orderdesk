@@ -3,7 +3,17 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {useRouter} from 'next/navigation';
 
-export const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8010';
+const API = process.env.NEXT_PUBLIC_API_URL || '/api';
+const loopbackHosts = ['localhost', '127.0.0.1'];
+
+function browserApiUrl(path:string) {
+  const url = new URL(API+path, window.location.origin);
+  if (loopbackHosts.includes(url.hostname) && loopbackHosts.includes(window.location.hostname)) {
+    url.hostname = window.location.hostname;
+  }
+  return url.href;
+}
+
 export class ApiError extends Error {
   constructor(public status:number, message:string) {super(message);}
 }
@@ -12,7 +22,7 @@ export async function api<T>(path:string, method='GET', body?:unknown):Promise<T
   const staff = (/^\/(ops(?:\/|$)|kitchen$)/).test(window.location.pathname);
   let response: Response;
   try {
-    response = await fetch(API+path,{
+    response = await fetch(browserApiUrl(path),{
       method, credentials:'include',
       headers:{'Content-Type':'application/json','X-OrderDesk':'1','X-OrderDesk-Experience':staff?'staff':'customer'},
       ...(body===undefined ? {} : {body:JSON.stringify(body)}),
@@ -64,7 +74,7 @@ export function useLive(path:string|null) {
   const [connectedPath,setConnectedPath] = useState<string|null>(null);
   useEffect(() => {
     if (!path) return;
-    const source = new EventSource(API+path,{withCredentials:true});
+    const source = new EventSource(browserApiUrl(path),{withCredentials:true});
     let last = 0;
     let open = false;
     let timer: ReturnType<typeof setTimeout>|undefined;
@@ -98,5 +108,5 @@ export const clock = (date:string) => new Intl.DateTimeFormat('en-IN',{
   timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',hour12:false,
 }).format(new Date(date));
 export const statusName = (s:string) => ({
-  new:'Awaiting acceptance',preparing:'Preparing',ready:'Ready for pickup',handed_off:'Handed off',cancelled:'Cancelled',
+  new:'Incoming',preparing:'Preparing',ready:'Ready for pickup',handed_off:'Handed off',cancelled:'Cancelled',
 }[s] || s);
